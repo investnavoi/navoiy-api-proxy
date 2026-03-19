@@ -14,6 +14,8 @@ const TARGET_COUNTRIES = [
   { reporterCode: "586", code: "PK", name: "Pakistan" }
 ];
 
+const YEARS = [2021, 2022, 2023, 2024];
+
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -34,13 +36,13 @@ function normalizeCountryList(rawCodes) {
     .map((code) => allowed.get(code));
 }
 
-function buildUrl({ reporterCode, hs, year, hasKey, maxRecords }) {
+function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
   const base = hasKey
     ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
     : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
   const params = new URLSearchParams({
     reporterCode,
-    period: String(year),
+    period: periods.join(","),
     flowCode: "M",
     cmdCode: String(hs),
     maxRecords: String(maxRecords),
@@ -49,10 +51,10 @@ function buildUrl({ reporterCode, hs, year, hasKey, maxRecords }) {
   return `${base}?${params.toString()}`;
 }
 
-async function fetchTradeYear({ reporterCode, hs, year, key }) {
+async function fetchTradeSeries({ reporterCode, hs, key }) {
   const hasKey = Boolean(key);
-  const maxRecords = hasKey ? 5000 : 500;
-  const url = buildUrl({ reporterCode, hs, year, hasKey, maxRecords });
+  const maxRecords = hasKey ? 5000 : 1000;
+  const url = buildUrl({ reporterCode, hs, periods: YEARS, hasKey, maxRecords });
   const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
   let response = null;
   let lastStatus = 0;
@@ -62,13 +64,13 @@ async function fetchTradeYear({ reporterCode, hs, year, key }) {
     lastStatus = response.status;
     if (response.ok) break;
     if (response.status !== 429 || attempt === 2) {
-      throw new Error(`Comtrade ${reporterCode} ${year}: ${response.status}`);
+      throw new Error(`Comtrade ${reporterCode}: ${response.status}`);
     }
     await sleep(1200 * (attempt + 1));
   }
 
   if (!response || !response.ok) {
-    throw new Error(`Comtrade ${reporterCode} ${year}: ${lastStatus || 0}`);
+    throw new Error(`Comtrade ${reporterCode}: ${lastStatus || 0}`);
   }
 
   const json = await response.json();
@@ -78,8 +80,25 @@ async function fetchTradeYear({ reporterCode, hs, year, key }) {
       ? json.dataset
       : [];
 
-  const totalValue = rows.reduce((sum, row) => sum + Number(row?.primaryValue || 0), 0);
-  const totalWeight = rows.reduce((sum, row) => sum + Number(row?.netWgt || 0), 0);
+  const yearImports = {};
+  const yearWeights = {};
+  const yearStatuses = {};
+  YEARS.forEach((year) => {
+    yearImports[String(year)] = 0;
+    yearWeights[String(year)] = 0;
+    yearStatuses[String(year)] = "no_data";
+  });
+
+  rows.forEach((row) => {
+    const year = String(row?.period || "");
+    if (!yearImports.hasOwnProperty(year)) return;
+    yearImports[year] += Number(row?.primaryValue || 0);
+    yearWeights[year] += Number(row?.netWgt || 0);
+    yearStatuses[year] = "ok";
+  });
+
+  const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
+  const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
   const firstDesc = rows.find((row) => row?.cmdDesc)?.cmdDesc || "";
 
   return {
@@ -87,14 +106,11 @@ async function fetchTradeYear({ reporterCode, hs, year, key }) {
     totalValue,
     totalWeight,
     desc: firstDesc,
+    latestValue: Number(yearImports["2024"] || 0),
+    yearImports,
+    yearStatuses,
     status: rows.length > 0 ? "ok" : "no_data"
   };
-}
-
-function calcTrend(currentValue, previousValue) {
-  if (!previousValue && !currentValue) return 0;
-  if (!previousValue && currentValue > 0) return 100;
-  return Math.round(((currentValue - previousValue) / previousValue) * 100);
 }
 
 export default async function handler(req, res) {
@@ -103,7 +119,6 @@ export default async function handler(req, res) {
 
   try {
     const hs = String(req.query.hs || "2516").replace(/\D/g, "").slice(0, 6) || "2516";
-    const year = parseInt(req.query.year || "2023", 10) || 2023;
     const key = String(
       process.env.COMTRADE_API_KEY ||
       process.env.COMTRADE_PRIMARY_KEY ||
@@ -116,10 +131,9 @@ export default async function handler(req, res) {
 
     for (const country of requestedCountries) {
       try {
-        const current = await fetchTradeYear({
+        const current = await fetchTradeSeries({
           reporterCode: country.reporterCode,
           hs,
-          year,
           key
         });
 
@@ -128,11 +142,15 @@ export default async function handler(req, res) {
           name: country.name,
           reporterCode: country.reporterCode,
           import_usd: current.totalValue,
+          latest_import_usd: current.latestValue,
           volume_tons: Math.round(current.totalWeight / 1000),
           trend_pct: null,
           status: current.status,
+          year_imports: current.yearImports,
+          year_statuses: current.yearStatuses,
           products: current.rows.map((row) => ({
             hs: row?.cmdCode || hs,
+            period: row?.period || "",
             desc: row?.cmdDesc || current.desc || "",
             value: Number(row?.primaryValue || 0),
             weight: Number(row?.netWgt || 0)
@@ -140,14 +158,21 @@ export default async function handler(req, res) {
         });
       } catch (error) {
         console.log("Comtrade error:", country.reporterCode, error.message);
+        const yearStatuses = {};
+        YEARS.forEach((year) => {
+          yearStatuses[String(year)] = String(error.message || "").includes("429") ? "rate_limited" : "error";
+        });
         countries.push({
           code: country.code,
           name: country.name,
           reporterCode: country.reporterCode,
           import_usd: 0,
+          latest_import_usd: 0,
           volume_tons: 0,
-          trend_pct: 0,
+          trend_pct: null,
           status: String(error.message || "").includes("429") ? "rate_limited" : "error",
+          year_imports: { "2021": 0, "2022": 0, "2023": 0, "2024": 0 },
+          year_statuses: yearStatuses,
           products: []
         });
       }
@@ -156,13 +181,12 @@ export default async function handler(req, res) {
     const okCountries = countries.filter((country) => country.status === "ok");
     const total = okCountries.reduce((sum, country) => sum + Number(country.import_usd || 0), 0);
     const biggest = okCountries.slice().sort((a, b) => (b.import_usd || 0) - (a.import_usd || 0))[0] || {};
-    const fastest = okCountries.slice().sort((a, b) => (b.trend_pct || 0) - (a.trend_pct || 0))[0] || {};
 
     res.status(200).json({
       countries,
       total_usd: total,
       biggest_market: biggest.name || "",
-      fastest_growing: fastest.name || "",
+      fastest_growing: "",
       count: countries.length,
       source: "UN Comtrade"
     });
