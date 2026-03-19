@@ -104,7 +104,12 @@ export default async function handler(req, res) {
   try {
     const hs = String(req.query.hs || "2516").replace(/\D/g, "").slice(0, 6) || "2516";
     const year = parseInt(req.query.year || "2023", 10) || 2023;
-    const key = String(req.query.key || "").trim();
+    const key = String(
+      process.env.COMTRADE_API_KEY ||
+      process.env.COMTRADE_PRIMARY_KEY ||
+      req.query.key ||
+      ""
+    ).trim();
     const requestedCountries = normalizeCountryList(req.query.countries);
 
     const countries = [];
