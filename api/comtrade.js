@@ -123,28 +123,13 @@ export default async function handler(req, res) {
           key
         });
 
-        let previousValue = 0;
-        if (key) {
-          try {
-            const previous = await fetchTradeYear({
-              reporterCode: country.reporterCode,
-              hs,
-              year: year - 1,
-              key
-            });
-            previousValue = previous.totalValue;
-          } catch (previousError) {
-            console.log("Comtrade previous-year warning:", country.reporterCode, previousError.message);
-          }
-        }
-
         countries.push({
           code: country.code,
           name: country.name,
           reporterCode: country.reporterCode,
           import_usd: current.totalValue,
           volume_tons: Math.round(current.totalWeight / 1000),
-          trend_pct: key ? calcTrend(current.totalValue, previousValue) : 0,
+          trend_pct: null,
           status: current.status,
           products: current.rows.map((row) => ({
             hs: row?.cmdCode || hs,
