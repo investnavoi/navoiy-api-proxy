@@ -39,13 +39,13 @@ function getMaxRecords(cmdCode, hasKey) {
   return hasKey ? 100000 : 500;
 }
 
-function buildUrl({ reporter, year, flowCode, cmdCode, maxRecords, hasKey }) {
+function buildUrl({ reporter, year, flowCode, partnerCode, cmdCode, maxRecords, hasKey }) {
   const base = hasKey ? PREMIUM_BASE : PREVIEW_BASE;
   const params = new URLSearchParams({
     reporterCode: String(reporter),
     period: String(year),
     flowCode,
-    partnerCode: '0',
+    partnerCode: String(partnerCode || '0'),
     cmdCode,
     maxRecords: String(maxRecords),
     includeDesc: 'true'
@@ -53,9 +53,9 @@ function buildUrl({ reporter, year, flowCode, cmdCode, maxRecords, hasKey }) {
   return `${base}?${params.toString()}`;
 }
 
-async function fetchComtradeRows({ reporter, year, flowCode, cmdCode, key, maxRecords }) {
+async function fetchComtradeRows({ reporter, year, flowCode, partnerCode, cmdCode, key, maxRecords }) {
   const hasKey = Boolean(key);
-  const url = buildUrl({ reporter, year, flowCode, cmdCode, maxRecords, hasKey });
+  const url = buildUrl({ reporter, year, flowCode, partnerCode, cmdCode, maxRecords, hasKey });
   const headers = { Accept: 'application/json' };
   if (hasKey) headers['Ocp-Apim-Subscription-Key'] = key;
 
@@ -86,6 +86,7 @@ export default async function handler(req, res) {
 
   try {
     const { reporter, year = '2023', flow = 'M', hs, key } = req.query;
+    const partner = String(req.query.partner || '0').trim() || '0';
     const level = String(req.query.level || '4').trim().toLowerCase();
     if (!reporter) return res.json({ error: 'reporter kerak', data: [] });
 
@@ -105,6 +106,7 @@ export default async function handler(req, res) {
       reporter,
       year,
       flowCode,
+      partnerCode: partner,
       cmdCode: requestedCmdCode,
       key: comtradeKey,
       maxRecords
@@ -119,6 +121,7 @@ export default async function handler(req, res) {
           reporter,
           year,
           flowCode,
+          partnerCode: partner,
           cmdCode: 'TOTAL',
           key: comtradeKey,
           maxRecords: 1
@@ -138,6 +141,7 @@ export default async function handler(req, res) {
       count: data.length,
       total_value: totalValue,
       total_row: totalRow,
+      partner_code: partner,
       requested_cmd_code: requestedCmdCode,
       requested_level: level,
       hs_filter: normalizedHs,
