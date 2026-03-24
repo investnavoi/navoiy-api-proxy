@@ -58,6 +58,32 @@ async function fetchTariffRows(url, fallbackPartner, fallbackIndicator) {
   return rows;
 }
 
+async function fetchTariffSet(reporterIso, partnerIso, year) {
+  const appliedUrl = `https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-tariff/reporter/${reporterIso}/year/${year}/partner/${partnerIso}/product/all/indicator/AHS-WGHTD-AVRG?format=JSON`;
+  const mfnUrl = `https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-tariff/reporter/${reporterIso}/year/${year}/partner/WLD/product/all/indicator/MFN-WGHTD-AVRG?format=JSON`;
+
+  const [appliedRows, mfnRows] = await Promise.all([
+    fetchTariffRows(appliedUrl, partnerIso, 'AHS-WGHTD-AVRG').catch(() => []),
+    fetchTariffRows(mfnUrl, 'WLD', 'MFN-WGHTD-AVRG').catch(() => [])
+  ]);
+
+  const grouped = {};
+  appliedRows.forEach((row) => {
+    if (!grouped[row.productCode]) grouped[row.productCode] = { productCode: row.productCode, productName: row.productName };
+    grouped[row.productCode].appliedRate = row.rate;
+    grouped[row.productCode].appliedIndicator = row.indicator;
+    grouped[row.productCode].appliedPartner = row.partner;
+  });
+  mfnRows.forEach((row) => {
+    if (!grouped[row.productCode]) grouped[row.productCode] = { productCode: row.productCode, productName: row.productName };
+    grouped[row.productCode].mfnRate = row.rate;
+    grouped[row.productCode].mfnIndicator = row.indicator;
+    grouped[row.productCode].mfnPartner = row.partner;
+  });
+
+  return Object.values(grouped);
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -67,36 +93,28 @@ export default async function handler(req, res) {
     const reporterIso = ISO3[String(reporter)] || String(reporter || '').toUpperCase();
     const partnerIso = ISO3[String(partner)] || String(partner || '').toUpperCase() || 'UZB';
     if (!reporterIso) return res.json({ data: [], error: 'reporter kerak' });
-
-    const appliedUrl = `https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-tariff/reporter/${reporterIso}/year/${year}/partner/${partnerIso}/product/all/indicator/AHS-WGHTD-AVRG?format=JSON`;
-    const mfnUrl = `https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-tariff/reporter/${reporterIso}/year/${year}/partner/WLD/product/all/indicator/MFN-WGHTD-AVRG?format=JSON`;
-
-    const [appliedRows, mfnRows] = await Promise.all([
-      fetchTariffRows(appliedUrl, partnerIso, 'AHS-WGHTD-AVRG').catch(() => []),
-      fetchTariffRows(mfnUrl, 'WLD', 'MFN-WGHTD-AVRG').catch(() => [])
-    ]);
-
-    const grouped = {};
-    appliedRows.forEach((row) => {
-      if (!grouped[row.productCode]) grouped[row.productCode] = { productCode: row.productCode, productName: row.productName };
-      grouped[row.productCode].appliedRate = row.rate;
-      grouped[row.productCode].appliedIndicator = row.indicator;
-      grouped[row.productCode].appliedPartner = row.partner;
-    });
-    mfnRows.forEach((row) => {
-      if (!grouped[row.productCode]) grouped[row.productCode] = { productCode: row.productCode, productName: row.productName };
-      grouped[row.productCode].mfnRate = row.rate;
-      grouped[row.productCode].mfnIndicator = row.indicator;
-      grouped[row.productCode].mfnPartner = row.partner;
-    });
+    const requestedYear = Number(year) || 2024;
+    const candidateYears = [requestedYear, requestedYear - 1, requestedYear - 2, requestedYear - 3]
+      .filter((v, idx, arr) => v > 0 && arr.indexOf(v) === idx);
+    let usedYear = requestedYear;
+    let rows = [];
+    for (const y of candidateYears) {
+      rows = await fetchTariffSet(reporterIso, partnerIso, y);
+      if (rows.length) {
+        usedYear = y;
+        break;
+      }
+    }
 
     res.json({
-      data: Object.values(grouped),
+      data: rows,
       source: 'WITS - UNCTAD TRAINS',
       reporter: reporterIso,
       partner: partnerIso,
-      year: String(year),
-      count: Object.keys(grouped).length
+      requestedYear: String(requestedYear),
+      year: String(usedYear),
+      isFallback: String(usedYear) !== String(requestedYear),
+      count: rows.length
     });
   } catch (e) {
     res.json({ data: [], error: e.message, source: 'WITS - UNCTAD TRAINS' });
