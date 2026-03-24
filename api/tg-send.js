@@ -86,6 +86,9 @@ function getUserName(user){
   return ((user?.firstName||'')+' '+(user?.lastName||'')).trim();
 }
 
+const CONTACT_IMPORTED_CODE = 'CONTACT_IMPORTED';
+const CONTACT_IMPORTED_WAIT_SEC = 15 * 60;
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin','*');
   if(req.method==='OPTIONS') return res.status(200).end();
@@ -143,10 +146,10 @@ export default async function handler(req, res) {
         }));
         if(imp.users?.length){
           userName = getUserName(imp.users[0]);
-          await new Promise(r=>setTimeout(r,1500));
-          await client.sendMessage(imp.users[0].id,{message});
-          sent=true;
           contactSource='imported';
+          lastError='Kontakt Telegram akkauntga saqlandi. Spam himoyasi sabab shu raqamga birozdan keyin yana yuboring.';
+          errorCode=CONTACT_IMPORTED_CODE;
+          retryAfterSec=CONTACT_IMPORTED_WAIT_SEC;
         } else {
           let importedUser=null;
           try {
@@ -164,9 +167,10 @@ export default async function handler(req, res) {
 
           if(importedUser){
             userName = getUserName(importedUser);
-            await client.sendMessage(importedUser.id,{message});
-            sent=true;
             if(!contactSource) contactSource = findContactByPhone([importedUser], ph) ? 'imported-contact-phone' : 'imported-contact-name';
+            lastError='Kontakt Telegram akkauntga saqlandi. Spam himoyasi sabab shu raqamga birozdan keyin yana yuboring.';
+            errorCode=CONTACT_IMPORTED_CODE;
+            retryAfterSec=CONTACT_IMPORTED_WAIT_SEC;
           } else {
             lastError='Telegram topilmadi';
           }
