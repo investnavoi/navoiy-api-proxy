@@ -39,6 +39,7 @@ export default async function handler(req, res) {
     const body = await readJsonBody(req);
     const materialName = String(body.materialName || '').trim();
     const requestKey = String(body.geminiKey || '').trim();
+    const tradeContext = body.tradeContext && typeof body.tradeContext === 'object' ? body.tradeContext : null;
     if (!materialName) return res.status(400).json({ error: 'materialName kerak' });
 
     const apiKey =
@@ -71,6 +72,19 @@ export default async function handler(req, res) {
       });
     }
 
+    const contextText = tradeContext
+      ? [
+          `Material: ${materialName}`,
+          '',
+          'Official dashboard trade context:',
+          JSON.stringify(tradeContext, null, 2),
+          '',
+          tradeContext.officialDataAvailable
+            ? 'Use the official UN Comtrade context above where relevant. If some products or countries are missing, state the gap clearly.'
+            : 'No official UN Comtrade context was available from the dashboard cache or live lookup. State this clearly and avoid fabricating official trade values.'
+        ].join('\n')
+      : materialName;
+
     const upstream = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
       {
@@ -86,7 +100,7 @@ export default async function handler(req, res) {
           contents: [
             {
               role: 'user',
-              parts: [{ text: materialName }]
+              parts: [{ text: contextText }]
             }
           ],
           generationConfig: {
