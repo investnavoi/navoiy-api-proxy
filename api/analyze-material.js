@@ -4,74 +4,6 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
-function uniq(arr) {
-  return Array.from(new Set((arr || []).filter(Boolean)));
-}
-
-function parseAnthropicError(raw) {
-  const rawText = String(raw || '').trim();
-  if (!rawText) {
-    return { message: 'Anthropic bo‘sh xato qaytardi', raw: '', type: '' };
-  }
-  try {
-    const json = JSON.parse(rawText);
-    const message =
-      (json.error && json.error.message) ||
-      json.message ||
-      rawText;
-    const type =
-      (json.error && json.error.type) ||
-      json.type ||
-      '';
-    return { message, raw: rawText, type };
-  } catch (_) {
-    return { message: rawText, raw: rawText, type: '' };
-  }
-}
-
-function shouldTryFallback(status, errInfo) {
-  const msg = String((errInfo && (errInfo.message || errInfo.raw || errInfo.type)) || '').toLowerCase();
-  if (status !== 400) return false;
-  return /model|not[_ -]?found|invalid|access|permission|available|unsupported/.test(msg);
-}
-
-async function callAnthropic({ apiKey, systemPrompt, materialName, model }) {
-  const upstream = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'anthropic-version': '2023-06-01',
-      'x-api-key': apiKey
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 8000,
-      stream: true,
-      system: systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: materialName }
-          ]
-        }
-      ]
-    })
-  });
-
-  if (upstream.ok) {
-    return { ok: true, upstream, model };
-  }
-
-  const detail = await upstream.text();
-  return {
-    ok: false,
-    status: upstream.status,
-    model,
-    error: parseAnthropicError(detail)
-  };
-}
-
 async function readJsonBody(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   if (typeof req.body === 'string' && req.body.trim()) return JSON.parse(req.body);
@@ -82,6 +14,22 @@ async function readJsonBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+function parseGeminiError(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return { message: 'Gemini bo‘sh xato qaytardi', raw: '' };
+  }
+  try {
+    const json = JSON.parse(text);
+    return {
+      message: (json.error && json.error.message) || json.message || text,
+      raw: text
+    };
+  } catch (_) {
+    return { message: text, raw: text };
+  }
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -90,51 +38,72 @@ export default async function handler(req, res) {
   try {
     const body = await readJsonBody(req);
     const materialName = String(body.materialName || '').trim();
+    const requestKey = String(body.geminiKey || '').trim();
     if (!materialName) return res.status(400).json({ error: 'materialName kerak' });
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    const systemPrompt = String(process.env.ANTHROPIC_SYSTEM_PROMPT || '').trim();
-    const configuredModel = String(process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514').trim();
+    const apiKey =
+      String(process.env.GEMINI_API_KEY || '').trim() ||
+      String(process.env.GOOGLE_API_KEY || '').trim() ||
+      requestKey;
+    const systemPrompt = String(
+      process.env.GEMINI_SYSTEM_PROMPT ||
+      process.env.ANTHROPIC_SYSTEM_PROMPT ||
+      ''
+    ).trim();
+    const model = String(process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
 
-    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY env topilmadi' });
-    if (!systemPrompt) return res.status(500).json({ error: 'ANTHROPIC_SYSTEM_PROMPT env topilmadi' });
-
+    if (!apiKey) {
+      return res.status(500).json({
+        error: 'GEMINI_API_KEY env topilmadi',
+        detail: 'Yoki frontenddan Gemini API key yuborilmadi.'
+      });
+    }
+    if (!systemPrompt) {
+      return res.status(500).json({
+        error: 'System prompt env topilmadi',
+        detail: 'GEMINI_SYSTEM_PROMPT yoki ANTHROPIC_SYSTEM_PROMPT ni to‘ldiring.'
+      });
+    }
     if (/INSERT YOUR FULL SYSTEM PROMPT HERE/i.test(systemPrompt)) {
       return res.status(400).json({
-        error: 'ANTHROPIC_SYSTEM_PROMPT placeholder holatda qolgan',
+        error: 'System prompt placeholder holatda qolgan',
         detail: 'Vercel env ichiga haqiqiy to‘liq system promptni paste qiling.'
       });
     }
 
-    const modelCandidates = uniq([
-      configuredModel,
-      'claude-sonnet-4-20250514',
-      'claude-3-7-sonnet-latest'
-    ]);
-
-    let upstream = null;
-    let lastFailure = null;
-    const tried = [];
-
-    for (const model of modelCandidates) {
-      tried.push(model);
-      const attempt = await callAnthropic({ apiKey, systemPrompt, materialName, model });
-      if (attempt.ok) {
-        upstream = attempt.upstream;
-        break;
+    const upstream = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: systemPrompt }]
+          },
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: materialName }]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 8192
+          }
+        })
       }
-      lastFailure = attempt;
-      if (!shouldTryFallback(attempt.status, attempt.error)) {
-        break;
-      }
-    }
+    );
 
-    if (!upstream) {
-      return res.status((lastFailure && lastFailure.status) || 500).json({
-        error: (lastFailure && lastFailure.error && lastFailure.error.message) || 'Anthropic API xato qaytardi',
-        detail: (lastFailure && lastFailure.error && lastFailure.error.raw) || '',
-        model: (lastFailure && lastFailure.model) || configuredModel,
-        tried_models: tried
+    if (!upstream.ok) {
+      const detail = await upstream.text();
+      const err = parseGeminiError(detail);
+      return res.status(upstream.status).json({
+        error: err.message || 'Gemini API xato qaytardi',
+        detail: err.raw,
+        model
       });
     }
 
@@ -146,7 +115,7 @@ export default async function handler(req, res) {
 
     const reader = upstream.body && upstream.body.getReader ? upstream.body.getReader() : null;
     if (!reader) {
-      return res.end('event: error\ndata: {"type":"error","message":"Anthropic stream mavjud emas"}\n\n');
+      return res.end('event: error\ndata: {"error":{"message":"Gemini stream mavjud emas"}}\n\n');
     }
 
     while (true) {
@@ -161,7 +130,7 @@ export default async function handler(req, res) {
     if (!res.headersSent) {
       return res.status(500).json({ error: error.message || 'Server xatosi' });
     }
-    res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', message: error.message || 'Server xatosi' })}\n\n`);
+    res.write(`event: error\ndata: ${JSON.stringify({ error: { message: error.message || 'Server xatosi' } })}\n\n`);
     res.end();
   }
 }
