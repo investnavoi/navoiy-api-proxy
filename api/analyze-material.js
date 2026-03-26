@@ -72,18 +72,26 @@ export default async function handler(req, res) {
       });
     }
 
-    const contextText = tradeContext
-      ? [
-          `Material: ${materialName}`,
-          '',
-          'Official dashboard trade context:',
-          JSON.stringify(tradeContext, null, 2),
-          '',
-          tradeContext.officialDataAvailable
-            ? 'Use the official UN Comtrade context above where relevant. If some products or countries are missing, state the gap clearly.'
-            : 'No official UN Comtrade context was available from the dashboard cache or live lookup. State this clearly and avoid fabricating official trade values.'
-        ].join('\n')
-      : materialName;
+    if (!tradeContext || !tradeContext.officialDataAvailable) {
+      return res.status(400).json({
+        error: 'UN Comtrade context topilmadi',
+        detail: 'AI Invest Tahlil faqat rasmiy UN Comtrade ma\'lumotlari bilan ishlaydi.'
+      });
+    }
+
+    const contextText = [
+      `Selected raw material: ${materialName}`,
+      '',
+      'Strict instruction:',
+      '- Analyze ONLY the selected raw material.',
+      '- Use ONLY the products listed in the official UN Comtrade context below.',
+      '- Do NOT use any sample Excel/template data.',
+      '- Do NOT add other downstream products unless they are present in the context JSON.',
+      '- If data is missing, say it is missing.',
+      '',
+      'Official UN Comtrade context:',
+      JSON.stringify(tradeContext, null, 2)
+    ].join('\n');
 
     const upstream = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
