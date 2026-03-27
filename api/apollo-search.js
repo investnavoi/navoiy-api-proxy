@@ -18,7 +18,6 @@ export default async function handler(req, res) {
         headers: {
           'Cache-Control': 'no-cache',
           'Accept': 'application/json',
-          'Authorization': 'Bearer ' + apiKey,
           'x-api-key': apiKey
         }
       });
@@ -55,7 +54,6 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-cache',
         'Accept': 'application/json',
-        'Authorization': 'Bearer ' + apiKey,
         'x-api-key': apiKey
       },
       body: JSON.stringify(payload)
