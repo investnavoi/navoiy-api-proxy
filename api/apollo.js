@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       bulk_org_enrichment:    { method: 'POST', url: '/organizations/bulk_enrich' },
 
       // SEARCH
-      people_search:          { method: 'POST', url: '/mixed_people/search' },
+      people_search:          { method: 'POST', url: '/mixed_people/api_search' },
       organization_search:    { method: 'POST', url: '/mixed_companies/search' },
       org_job_postings:       { method: 'GET',  url: '/organizations/{org_id}/job_postings' },
       org_complete_info:      { method: 'GET',  url: '/organizations/{org_id}' },
