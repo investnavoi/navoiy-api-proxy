@@ -39,6 +39,22 @@ const COUNTRY_DEFS = [
   { iso3: 'PAK', wb: 'PAK', iea: 'Pakistan', display: 'Pakistan', aliases: ['pakistan', 'pokiston'] }
 ];
 
+const TARIFF_TARGETS = [
+  { iso3: 'UZB', name: "O'zbekiston" },
+  { iso3: 'TKM', name: 'Turkmaniston' },
+  { iso3: 'TJK', name: 'Tojikiston' },
+  { iso3: 'KGZ', name: "Qirg'iziston" },
+  { iso3: 'KAZ', name: "Qozog'iston" },
+  { iso3: 'MNG', name: 'Mongoliya' },
+  { iso3: 'RUS', name: 'Rossiya' },
+  { iso3: 'AZE', name: 'Ozarbayjon' },
+  { iso3: 'GEO', name: 'Gruziya' },
+  { iso3: 'ARM', name: 'Armaniston' },
+  { iso3: 'IRN', name: 'Eron' },
+  { iso3: 'AFG', name: "Afg'oniston" },
+  { iso3: 'PAK', name: 'Pokiston' }
+];
+
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -240,11 +256,184 @@ function ratio(base, compare) {
   return a / b;
 }
 
+function parseTariffRange(productCode) {
+  const code = String(productCode || '');
+  const rangeMatch = code.match(/^(\d{2})-(\d{2})_/);
+  if (rangeMatch) return { start: Number(rangeMatch[1]), end: Number(rangeMatch[2]) };
+  const singleMatch = code.match(/^(\d{2})_/);
+  if (singleMatch) return { start: Number(singleMatch[1]), end: Number(singleMatch[1]) };
+  return null;
+}
+
+async function fetchTariffRows(url, fallbackPartner, fallbackIndicator) {
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`WITS Tariff: ${r.status}`);
+  const json = await r.json();
+  const series = json?.dataSets?.[0]?.series || {};
+  const dims = json?.structure?.dimensions?.series || [];
+  const productDimIndex = dims.findIndex((d) => d.id === 'PRODUCTCODE');
+  const partnerDimIndex = dims.findIndex((d) => d.id === 'PARTNER');
+  const indicatorDimIndex = dims.findIndex((d) => d.id === 'INDICATOR');
+  const products = productDimIndex >= 0 ? (dims[productDimIndex]?.values || []) : [];
+  const partners = partnerDimIndex >= 0 ? (dims[partnerDimIndex]?.values || []) : [];
+  const indicators = indicatorDimIndex >= 0 ? (dims[indicatorDimIndex]?.values || []) : [];
+  const rows = [];
+
+  Object.keys(series).forEach((key) => {
+    const indexes = key.split(':').map((n) => Number(n));
+    const product = products[indexes[productDimIndex]] || {};
+    const partner = partners[indexes[partnerDimIndex]] || {};
+    const indicator = indicators[indexes[indicatorDimIndex]] || {};
+    const observations = series[key]?.observations || {};
+    const obsKey = Object.keys(observations)[0];
+    const rawValue = obsKey !== undefined ? observations[obsKey] : null;
+    const value = Array.isArray(rawValue) ? Number(rawValue[0]) : Number(rawValue);
+    if (!product.id || product.id === 'Total' || Number.isNaN(value)) return;
+    rows.push({
+      productCode: product.id,
+      productName: product.name || product.id,
+      partner: partner.id || fallbackPartner || '',
+      indicator: indicator.id || fallbackIndicator || '',
+      indicatorName: indicator.name || fallbackIndicator || '',
+      rate: value
+    });
+  });
+
+  return rows;
+}
+
+async function fetchTariffSet(reporterIso, partnerIso, year) {
+  const appliedUrl = `https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-tariff/reporter/${reporterIso}/year/${year}/partner/${partnerIso}/product/all/indicator/AHS-WGHTD-AVRG?format=JSON`;
+  const mfnUrl = `https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-tariff/reporter/${reporterIso}/year/${year}/partner/WLD/product/all/indicator/MFN-WGHTD-AVRG?format=JSON`;
+
+  const [appliedRows, mfnRows] = await Promise.all([
+    fetchTariffRows(appliedUrl, partnerIso, 'AHS-WGHTD-AVRG').catch(() => []),
+    fetchTariffRows(mfnUrl, 'WLD', 'MFN-WGHTD-AVRG').catch(() => [])
+  ]);
+
+  const grouped = {};
+  appliedRows.forEach((row) => {
+    if (!grouped[row.productCode]) grouped[row.productCode] = { productCode: row.productCode, productName: row.productName };
+    grouped[row.productCode].appliedRate = row.rate;
+    grouped[row.productCode].appliedIndicator = row.indicator;
+  });
+  mfnRows.forEach((row) => {
+    if (!grouped[row.productCode]) grouped[row.productCode] = { productCode: row.productCode, productName: row.productName };
+    grouped[row.productCode].mfnRate = row.rate;
+    grouped[row.productCode].mfnIndicator = row.indicator;
+  });
+
+  return Object.values(grouped);
+}
+
+function matchTariffInfo(rows, hsCode) {
+  const hs2 = parseInt(String(hsCode || '').replace(/\D/g, '').slice(0, 2), 10);
+  if (!hs2 || !Array.isArray(rows) || !rows.length) return null;
+  const match = rows.find((row) => {
+    const range = parseTariffRange(row.productCode);
+    return range && hs2 >= range.start && hs2 <= range.end;
+  });
+  if (!match) return null;
+  const appliedRate = match.appliedRate != null && !Number.isNaN(Number(match.appliedRate)) ? Number(match.appliedRate) : null;
+  const mfnRate = match.mfnRate != null && !Number.isNaN(Number(match.mfnRate)) ? Number(match.mfnRate) : null;
+  const rate = appliedRate != null ? appliedRate : mfnRate;
+  if (rate == null) return null;
+  return {
+    rate,
+    type: appliedRate != null ? 'AHS' : 'MFN',
+    productCode: match.productCode,
+    productName: match.productName || '',
+    appliedRate,
+    mfnRate
+  };
+}
+
+async function fetchTariffPair(reporterIso, partnerIso, hsCode, requestedYear) {
+  const candidateYears = [requestedYear, requestedYear - 1, requestedYear - 2, requestedYear - 3]
+    .filter((v, idx, arr) => v > 0 && arr.indexOf(v) === idx);
+  for (const year of candidateYears) {
+    const rows = await fetchTariffSet(reporterIso, partnerIso, year);
+    const info = matchTariffInfo(rows, hsCode);
+    if (info) return { ...info, year: String(year) };
+  }
+  return null;
+}
+
+function avg(list) {
+  const valid = list.filter((v) => Number.isFinite(Number(v)));
+  if (!valid.length) return null;
+  return valid.reduce((sum, v) => sum + Number(v), 0) / valid.length;
+}
+
+async function handleTariffRequest(req, res) {
+  const sourceIso = String(req.query.source || '').trim().toUpperCase();
+  const hsCode = String(req.query.hs || '').replace(/\D/g, '');
+  const productName = String(req.query.productName || '').trim();
+  const requestedYear = Number(req.query.year) || 2024;
+
+  if (!sourceIso) return res.status(400).json({ error: 'source param kerak' });
+  if (!hsCode || hsCode.length < 2) return res.status(400).json({ error: 'hs param kerak' });
+
+  const routes = await Promise.all(TARIFF_TARGETS.map(async (target) => {
+    const [sourceTariff, uzTariff] = await Promise.all([
+      fetchTariffPair(target.iso3, sourceIso, hsCode, requestedYear).catch(() => null),
+      target.iso3 === 'UZB'
+        ? Promise.resolve(null)
+        : fetchTariffPair(target.iso3, 'UZB', hsCode, requestedYear).catch(() => null)
+    ]);
+    const diff = sourceTariff && uzTariff ? Number(sourceTariff.rate) - Number(uzTariff.rate) : null;
+    const diffPct = sourceTariff && uzTariff && Number(sourceTariff.rate) > 0
+      ? Math.round((diff / Number(sourceTariff.rate)) * 100)
+      : null;
+    return {
+      targetIso3: target.iso3,
+      targetName: target.name,
+      sourceRate: sourceTariff ? Number(sourceTariff.rate) : null,
+      sourceType: sourceTariff ? sourceTariff.type : null,
+      sourceYear: sourceTariff ? sourceTariff.year : null,
+      uzRate: uzTariff ? Number(uzTariff.rate) : null,
+      uzType: uzTariff ? uzTariff.type : null,
+      uzYear: uzTariff ? uzTariff.year : null,
+      diff,
+      diffPct,
+      matchedProductCode: (sourceTariff && sourceTariff.productCode) || (uzTariff && uzTariff.productCode) || '',
+      matchedProductName: (sourceTariff && sourceTariff.productName) || (uzTariff && uzTariff.productName) || ''
+    };
+  }));
+
+  const avgSourceRate = avg(routes.map((row) => row.sourceRate));
+  const avgUzRate = avg(routes.map((row) => row.uzRate));
+  const comparableDiffs = routes.filter((row) => Number.isFinite(row.diff));
+  const avgDiff = avg(comparableDiffs.map((row) => row.diff));
+  const avgDiffPct = avgSourceRate && Number.isFinite(avgDiff) ? Math.round((avgDiff / avgSourceRate) * 100) : null;
+  const bestAdvantage = comparableDiffs
+    .filter((row) => row.diff > 0)
+    .sort((a, b) => b.diff - a.diff)[0] || null;
+
+  return res.json({
+    status: 'ok',
+    sourceIso3: sourceIso,
+    productName,
+    hsCode,
+    requestedYear: String(requestedYear),
+    source: 'WITS - UNCTAD TRAINS',
+    routes,
+    avgSourceRate,
+    avgUzRate,
+    avgDiff,
+    avgDiffPct,
+    bestAdvantage
+  });
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
+    if (String(req.query.mode || '').trim().toLowerCase() === 'tariff') {
+      return await handleTariffRequest(req, res);
+    }
     const input = String(req.query.country || '').trim();
     if (!input) return res.status(400).json({ error: 'country param kerak' });
 
