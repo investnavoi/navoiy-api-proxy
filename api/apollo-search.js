@@ -8,10 +8,37 @@ export default async function handler(req, res) {
     const apiKey = body.api_key || process.env.APOLLO_KEY || process.env.APOLLO_API_KEY || '';
     if(!apiKey) return res.status(400).json({ error: 'Apollo API key topilmadi' });
 
+    const operation = String(body.operation || '').trim();
+    if(operation === 'organization_info'){
+      const orgId = String(body.organization_id || '').trim();
+      if(!orgId) return res.status(400).json({ error: 'organization_id talab qilinadi' });
+
+      const resp = await fetch('https://api.apollo.io/api/v1/organizations/' + encodeURIComponent(orgId), {
+        method: 'GET',
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ' + apiKey,
+          'x-api-key': apiKey
+        }
+      });
+
+      const raw = await resp.text();
+      let data;
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        data = { raw };
+      }
+      return res.status(resp.status).json(data);
+    }
+
     const searchType = body.search_type === 'organizations' ? 'organizations' : 'people';
     const payload = { ...body };
     delete payload.api_key;
     delete payload.search_type;
+    delete payload.operation;
+    delete payload.organization_id;
 
     if(payload.keyword && !payload.q_keywords){
       payload.q_keywords = String(payload.keyword || '').trim();
@@ -28,6 +55,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-cache',
         'Accept': 'application/json',
+        'Authorization': 'Bearer ' + apiKey,
         'x-api-key': apiKey
       },
       body: JSON.stringify(payload)
