@@ -255,13 +255,15 @@ export default async function handler(req, res) {
 
     const uzbekistan = COUNTRY_DEFS.find((row) => row.iso3 === 'UZB');
 
-    const [countryGdp, countryIndustryShare, countryWage, countryIea, uzGdp, uzIndustryShare, uzWage, uzIea] = await Promise.all([
+    const [countryGdp, countryIndustryShare, countryTaxRate, countryWage, countryIea, uzGdp, uzIndustryShare, uzTaxRate, uzWage, uzIea] = await Promise.all([
       fetchWorldBankIndicator(country.wb, 'NY.GDP.PCAP.CD').catch(() => null),
       fetchWorldBankIndicator(country.wb, 'NV.IND.TOTL.ZS').catch(() => null),
+      fetchWorldBankIndicator(country.wb, 'IC.TAX.TOTL.CP.ZS').catch(() => null),
       fetchIlostatMonthlyWage(country.iso3).catch(() => null),
       fetchIeaIndustrialBundle(country.iea).catch(() => ({ electricity: null, naturalGas: null })),
       fetchWorldBankIndicator(uzbekistan.wb, 'NY.GDP.PCAP.CD').catch(() => null),
       fetchWorldBankIndicator(uzbekistan.wb, 'NV.IND.TOTL.ZS').catch(() => null),
+      fetchWorldBankIndicator(uzbekistan.wb, 'IC.TAX.TOTL.CP.ZS').catch(() => null),
       fetchIlostatMonthlyWage(uzbekistan.iso3).catch(() => null),
       fetchIeaIndustrialBundle(uzbekistan.iea).catch(() => ({ electricity: null, naturalGas: null }))
     ]);
@@ -301,6 +303,15 @@ export default async function handler(req, res) {
           source: countryIndustryShare?.source || uzIndustryShare?.source || 'World Bank Open Data API',
           indicator: 'NV.IND.TOTL.ZS'
         },
+        totalTaxRate: {
+          country: countryTaxRate ? countryTaxRate.value : null,
+          countryYear: countryTaxRate ? countryTaxRate.year : null,
+          uzbekistan: uzTaxRate ? uzTaxRate.value : null,
+          uzbekistanYear: uzTaxRate ? uzTaxRate.year : null,
+          unit: '% of profit',
+          source: countryTaxRate?.source || uzTaxRate?.source || 'World Bank Open Data API',
+          indicator: 'IC.TAX.TOTL.CP.ZS'
+        },
         monthlyWage: {
           country: countryWage ? countryWage.value : null,
           countryYear: countryWage ? countryWage.year : null,
@@ -338,7 +349,8 @@ export default async function handler(req, res) {
       wageRatio: ratio(payload.metrics.monthlyWage.country, payload.metrics.monthlyWage.uzbekistan),
       electricityRatio: ratio(payload.metrics.electricityPrice.country, payload.metrics.electricityPrice.uzbekistan),
       naturalGasRatio: ratio(payload.metrics.naturalGasPrice.country, payload.metrics.naturalGasPrice.uzbekistan),
-      industryShareRatio: ratio(payload.metrics.industryShare.country, payload.metrics.industryShare.uzbekistan)
+      industryShareRatio: ratio(payload.metrics.industryShare.country, payload.metrics.industryShare.uzbekistan),
+      totalTaxRateRatio: ratio(payload.metrics.totalTaxRate.country, payload.metrics.totalTaxRate.uzbekistan)
     };
 
     res.json(payload);
