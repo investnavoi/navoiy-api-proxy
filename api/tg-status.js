@@ -25,6 +25,13 @@ function normalizeName(value){
     .trim();
 }
 
+function normalizeMessageText(value){
+  return String(value||'')
+    .toLowerCase()
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
 function getUserName(user){
   return ((user?.firstName||'')+' '+(user?.lastName||'')).trim();
 }
@@ -186,18 +193,28 @@ async function handleReplies(req, res, body){
       }
 
       const sinceTs = target?.since ? new Date(target.since).getTime() : 0;
+      const sinceBufferTs = sinceTs ? Math.max(0, sinceTs - (2 * 60 * 1000)) : 0;
+      const sentMessageNormalized = normalizeMessageText(target?.sentMessage || '');
       const messages = await fetchMessagesForUser(client, user, selfTarget);
-      const inbound = (messages||[])
-        .filter((message)=>message && (selfTarget ? true : !message.out))
+      const recentMessages = (messages||[])
+        .filter((message)=>!!message)
         .filter((message)=>{
           const messageTs = message?.date ? new Date(message.date).getTime() : 0;
-          return !sinceTs || (messageTs && messageTs > sinceTs);
+          return !sinceBufferTs || (messageTs && messageTs > sinceBufferTs);
         })
         .sort((a,b)=>{
           const aTs = a?.date ? new Date(a.date).getTime() : 0;
           const bTs = b?.date ? new Date(b.date).getTime() : 0;
           return bTs - aTs;
         });
+
+      const inbound = selfTarget
+        ? recentMessages.filter((message)=>{
+            const text = normalizeMessageText(message?.message || message?.text || '');
+            if(!sentMessageNormalized) return true;
+            return text && text !== sentMessageNormalized;
+          })
+        : recentMessages.filter((message)=>message.out !== true);
 
       const latest = inbound[0] || null;
       if(!latest){
