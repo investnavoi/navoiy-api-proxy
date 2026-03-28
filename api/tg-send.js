@@ -86,6 +86,11 @@ function getUserName(user){
   return ((user?.firstName||'')+' '+(user?.lastName||'')).trim();
 }
 
+function getUserId(user){
+  if(!user || user.id===undefined || user.id===null) return '';
+  try { return String(user.id); } catch(_e) { return ''; }
+}
+
 const CONTACT_IMPORTED_CODE = 'CONTACT_IMPORTED';
 const CONTACT_IMPORTED_WAIT_SEC = 15 * 60;
 
@@ -118,6 +123,8 @@ export default async function handler(req, res) {
 
     let sent=false;
     let userName='';
+    let userId='';
+    let username='';
     let lastError='';
     let errorCode='';
     let retryAfterSec=0;
@@ -132,6 +139,8 @@ export default async function handler(req, res) {
 
       if(existingUser){
         userName = getUserName(existingUser);
+        userId = getUserId(existingUser);
+        username = existingUser?.username || '';
         await client.sendMessage(existingUser.id,{message});
         sent=true;
         contactSource = findContactByPhone([existingUser], ph) ? 'existing-phone' : 'existing-name';
@@ -146,6 +155,8 @@ export default async function handler(req, res) {
         }));
         if(imp.users?.length){
           userName = getUserName(imp.users[0]);
+          userId = getUserId(imp.users[0]);
+          username = imp.users[0]?.username || '';
           contactSource='imported';
           lastError='Kontakt Telegram akkauntga saqlandi. Spam himoyasi sabab shu raqamga birozdan keyin yana yuboring.';
           errorCode=CONTACT_IMPORTED_CODE;
@@ -167,6 +178,8 @@ export default async function handler(req, res) {
 
           if(importedUser){
             userName = getUserName(importedUser);
+            userId = getUserId(importedUser);
+            username = importedUser?.username || '';
             if(!contactSource) contactSource = findContactByPhone([importedUser], ph) ? 'imported-contact-phone' : 'imported-contact-name';
             lastError='Kontakt Telegram akkauntga saqlandi. Spam himoyasi sabab shu raqamga birozdan keyin yana yuboring.';
             errorCode=CONTACT_IMPORTED_CODE;
@@ -187,6 +200,8 @@ export default async function handler(req, res) {
         ok:true,
         phone:ph,
         user:userName,
+        userId,
+        username,
         method:'mtproto',
         contactSource
       });
@@ -199,6 +214,9 @@ export default async function handler(req, res) {
       ok:false,
       phone:ph,
       error:lastError||'Telegram yuborishda xato',
+      user:userName,
+      userId,
+      username,
       code:errorCode,
       retryAfterSec,
       isPeerFlood:errorCode==='PEER_FLOOD',
