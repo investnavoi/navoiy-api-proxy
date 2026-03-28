@@ -444,15 +444,34 @@ export default async function handler(req, res) {
 
     const uzbekistan = COUNTRY_DEFS.find((row) => row.iso3 === 'UZB');
 
-    const [countryGdp, countryIndustryShare, countryTaxRate, countryWage, countryIea, uzGdp, uzIndustryShare, uzTaxRate, uzWage, uzIea] = await Promise.all([
+    const [
+      countryGdp,
+      countryIndustryShare,
+      countryTaxLabor,
+      countryTaxProfit,
+      countryTaxOther,
+      countryWage,
+      countryIea,
+      uzGdp,
+      uzIndustryShare,
+      uzTaxLabor,
+      uzTaxProfit,
+      uzTaxOther,
+      uzWage,
+      uzIea
+    ] = await Promise.all([
       fetchWorldBankIndicator(country.wb, 'NY.GDP.PCAP.CD').catch(() => null),
       fetchWorldBankIndicator(country.wb, 'NV.IND.TOTL.ZS').catch(() => null),
-      fetchWorldBankIndicator(country.wb, 'IC.TAX.TOTL.CP.ZS').catch(() => null),
+      fetchWorldBankIndicator(country.wb, 'PAY.TAX.LABR.TAX.CONTR.ZS').catch(() => null),
+      fetchWorldBankIndicator(country.wb, 'PAY.TAX.PRFT.CP.ZS').catch(() => null),
+      fetchWorldBankIndicator(country.wb, 'OTHR.TAX.PAID.ZS').catch(() => null),
       fetchIlostatMonthlyWage(country.iso3).catch(() => null),
       fetchIeaIndustrialBundle(country.iea).catch(() => ({ electricity: null, naturalGas: null })),
       fetchWorldBankIndicator(uzbekistan.wb, 'NY.GDP.PCAP.CD').catch(() => null),
       fetchWorldBankIndicator(uzbekistan.wb, 'NV.IND.TOTL.ZS').catch(() => null),
-      fetchWorldBankIndicator(uzbekistan.wb, 'IC.TAX.TOTL.CP.ZS').catch(() => null),
+      fetchWorldBankIndicator(uzbekistan.wb, 'PAY.TAX.LABR.TAX.CONTR.ZS').catch(() => null),
+      fetchWorldBankIndicator(uzbekistan.wb, 'PAY.TAX.PRFT.CP.ZS').catch(() => null),
+      fetchWorldBankIndicator(uzbekistan.wb, 'OTHR.TAX.PAID.ZS').catch(() => null),
       fetchIlostatMonthlyWage(uzbekistan.iso3).catch(() => null),
       fetchIeaIndustrialBundle(uzbekistan.iea).catch(() => ({ electricity: null, naturalGas: null }))
     ]);
@@ -461,6 +480,17 @@ export default async function handler(req, res) {
     if (!countryElectricity && country.iso3 === 'USA') {
       countryElectricity = await fetchUsEiaIndustrialElectricity().catch(() => null);
     }
+
+    const countryTaxPieces = [countryTaxLabor, countryTaxProfit, countryTaxOther].filter(Boolean);
+    const uzTaxPieces = [uzTaxLabor, uzTaxProfit, uzTaxOther].filter(Boolean);
+    const countryTaxTotal = countryTaxPieces.length
+      ? countryTaxPieces.reduce((sum, row) => sum + Number(row.value || 0), 0)
+      : null;
+    const uzTaxTotal = uzTaxPieces.length
+      ? uzTaxPieces.reduce((sum, row) => sum + Number(row.value || 0), 0)
+      : null;
+    const countryTaxYear = countryTaxPieces.length ? countryTaxPieces.map((row) => row.year).filter(Boolean).sort().slice(-1)[0] : null;
+    const uzTaxYear = uzTaxPieces.length ? uzTaxPieces.map((row) => row.year).filter(Boolean).sort().slice(-1)[0] : null;
 
     const payload = {
       status: 'ok',
@@ -493,13 +523,25 @@ export default async function handler(req, res) {
           indicator: 'NV.IND.TOTL.ZS'
         },
         totalTaxRate: {
-          country: countryTaxRate ? countryTaxRate.value : null,
-          countryYear: countryTaxRate ? countryTaxRate.year : null,
-          uzbekistan: uzTaxRate ? uzTaxRate.value : null,
-          uzbekistanYear: uzTaxRate ? uzTaxRate.year : null,
+          country: countryTaxTotal,
+          countryYear: countryTaxYear,
+          uzbekistan: uzTaxTotal,
+          uzbekistanYear: uzTaxYear,
           unit: '% of profit',
-          source: countryTaxRate?.source || uzTaxRate?.source || 'World Bank Open Data API',
-          indicator: 'IC.TAX.TOTL.CP.ZS'
+          source: 'World Bank Open Data API',
+          indicator: 'PAY.TAX.LABR.TAX.CONTR.ZS + PAY.TAX.PRFT.CP.ZS + OTHR.TAX.PAID.ZS',
+          components: {
+            country: {
+              laborTax: countryTaxLabor ? countryTaxLabor.value : null,
+              profitTax: countryTaxProfit ? countryTaxProfit.value : null,
+              otherTaxes: countryTaxOther ? countryTaxOther.value : null
+            },
+            uzbekistan: {
+              laborTax: uzTaxLabor ? uzTaxLabor.value : null,
+              profitTax: uzTaxProfit ? uzTaxProfit.value : null,
+              otherTaxes: uzTaxOther ? uzTaxOther.value : null
+            }
+          }
         },
         monthlyWage: {
           country: countryWage ? countryWage.value : null,
