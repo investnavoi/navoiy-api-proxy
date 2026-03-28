@@ -105,8 +105,19 @@ function isSelfTarget(target, me){
   return false;
 }
 
-async function fetchMessagesForUser(client, user){
+async function fetchMessagesForUser(client, user, isSelf){
   let messages = [];
+  if(isSelf){
+    try {
+      messages = await client.getMessages('me', {limit:20});
+    } catch(_selfError){}
+    if(Array.isArray(messages) && messages.length) return messages;
+    try {
+      const selfEntity = await client.getEntity('me');
+      messages = await client.getMessages(selfEntity, {limit:20});
+    } catch(_selfEntityError){}
+    if(Array.isArray(messages) && messages.length) return messages;
+  }
   try {
     messages = await client.getMessages(user, {limit:12});
   } catch(_firstError){
@@ -175,7 +186,7 @@ async function handleReplies(req, res, body){
       }
 
       const sinceTs = target?.since ? new Date(target.since).getTime() : 0;
-      const messages = await fetchMessagesForUser(client, user);
+      const messages = await fetchMessagesForUser(client, user, selfTarget);
       const inbound = (messages||[])
         .filter((message)=>message && (selfTarget ? true : !message.out))
         .filter((message)=>{
