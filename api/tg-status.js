@@ -88,6 +88,23 @@ async function resolveTargetUser(client, Api, users, target){
   return null;
 }
 
+function isSelfTarget(target, me){
+  if(!target || !me) return false;
+  const targetPeerId = String(target?.tgPeerId || '').trim();
+  const meId = getUserId(me);
+  if(targetPeerId && meId && targetPeerId === meId) return true;
+
+  const targetPhone = normalizeDigits(cleanPhone(target?.phone || ''));
+  const mePhone = normalizeDigits(me?.phone || '');
+  if(targetPhone && mePhone && (targetPhone === mePhone || targetPhone.endsWith(mePhone.slice(-9)))) return true;
+
+  const targetName = normalizeName(target?.name || '');
+  const meName = normalizeName(getUserName(me));
+  const meUser = normalizeName(me?.username || '');
+  if(targetName && ((meName && (targetName === meName || targetName.includes(meName) || meName.includes(targetName))) || (meUser && (targetName === meUser || targetName.includes(meUser))))) return true;
+  return false;
+}
+
 async function fetchMessagesForUser(client, user){
   let messages = [];
   try {
@@ -131,6 +148,8 @@ async function handleReplies(req, res, body){
     client = new TelegramClient(new StringSession(sessionStr), apiId, apiHash, {connectionRetries:3});
     await client.connect();
     connected = true;
+    let me = null;
+    try { me = await client.getMe(); } catch(_meError){}
 
     let contactsUsers = [];
     try {
@@ -141,7 +160,11 @@ async function handleReplies(req, res, body){
     const replies = [];
 
     for(const target of targets){
-      const user = await resolveTargetUser(client, Api, contactsUsers, target);
+      let user = await resolveTargetUser(client, Api, contactsUsers, target);
+      const selfTarget = isSelfTarget(target, me);
+      if(!user && selfTarget && me){
+        user = me;
+      }
       if(!user){
         replies.push({
           id: target?.id || '',
@@ -154,7 +177,7 @@ async function handleReplies(req, res, body){
       const sinceTs = target?.since ? new Date(target.since).getTime() : 0;
       const messages = await fetchMessagesForUser(client, user);
       const inbound = (messages||[])
-        .filter((message)=>message && !message.out)
+        .filter((message)=>message && (selfTarget ? true : !message.out))
         .filter((message)=>{
           const messageTs = message?.date ? new Date(message.date).getTime() : 0;
           return !sinceTs || (messageTs && messageTs > sinceTs);
@@ -173,7 +196,8 @@ async function handleReplies(req, res, body){
           found: true,
           peerId: getUserId(user),
           user: getUserName(user),
-          username: user?.username || ''
+          username: user?.username || '',
+          selfTarget: !!selfTarget
         });
         continue;
       }
@@ -188,7 +212,8 @@ async function handleReplies(req, res, body){
         peerId: getUserId(user),
         user: getUserName(user),
         username: user?.username || '',
-        phone: user?.phone ? ('+' + String(user.phone).replace(/\D/g,'')) : cleanPhone(target?.phone || '')
+        phone: user?.phone ? ('+' + String(user.phone).replace(/\D/g,'')) : cleanPhone(target?.phone || ''),
+        selfTarget: !!selfTarget
       });
     }
 
