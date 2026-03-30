@@ -8,8 +8,12 @@ export default async function handler(req, res) {
     const apiKey = body.api_key || process.env.APOLLO_KEY || process.env.APOLLO_API_KEY || '';
     if(!apiKey) return res.status(400).json({ error: 'Apollo API key topilmadi' });
 
-    const operation = String(body.operation || '').trim();
-    if(operation === 'organization_info'){
+    let action = String(body.action || body.operation || '').trim();
+    if(!action){
+      action = body.search_type === 'organizations' ? 'organization_search' : 'people_search';
+    }
+
+    if(action === 'organization_info'){
       const orgId = String(body.organization_id || '').trim();
       if(!orgId) return res.status(400).json({ error: 'organization_id talab qilinadi' });
 
@@ -32,11 +36,11 @@ export default async function handler(req, res) {
       return res.status(resp.status).json(data);
     }
 
-    const searchType = body.search_type === 'organizations' ? 'organizations' : 'people';
     const payload = { ...body };
     delete payload.api_key;
     delete payload.search_type;
     delete payload.operation;
+    delete payload.action;
     delete payload.organization_id;
 
     if(payload.keyword && !payload.q_keywords){
@@ -44,9 +48,26 @@ export default async function handler(req, res) {
     }
     delete payload.keyword;
 
-    const url = searchType === 'organizations'
-      ? 'https://api.apollo.io/api/v1/mixed_companies/search'
-      : 'https://api.apollo.io/api/v1/mixed_people/api_search';
+    if((action === 'people_enrichment' || action === 'bulk_people_enrichment') && payload.run_waterfall_email === undefined){
+      payload.run_waterfall_email = true;
+    }
+    if((action === 'people_enrichment' || action === 'bulk_people_enrichment') && !payload.webhook_url){
+      payload.webhook_url = process.env.APOLLO_WEBHOOK_URL || process.env.WEBHOOK_URL || '';
+      if(!payload.webhook_url) delete payload.webhook_url;
+    }
+
+    let url = '';
+    if(action === 'organization_search'){
+      url = 'https://api.apollo.io/api/v1/mixed_companies/search';
+    } else if(action === 'people_search'){
+      url = 'https://api.apollo.io/api/v1/mixed_people/api_search';
+    } else if(action === 'people_enrichment'){
+      url = 'https://api.apollo.io/api/v1/people/match';
+    } else if(action === 'bulk_people_enrichment'){
+      url = 'https://api.apollo.io/api/v1/people/bulk_match';
+    } else {
+      return res.status(400).json({ error: 'Apollo action qo‘llab-quvvatlanmaydi: ' + action });
+    }
 
     const resp = await fetch(url, {
       method: 'POST',
