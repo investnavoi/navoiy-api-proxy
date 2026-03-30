@@ -1,138 +1,43 @@
-// ═══ Apollo.io API — BARCHA ENDPOINTLAR ═══
-// Docs: https://docs.apollo.io/reference
-
-const BASE = 'https://api.apollo.io/api/v1';
-
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
-  try {
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const apiKey = body.api_key || req.query.api_key || process.env.APOLLO_KEY || '';
-    const action = body.action || req.query.action || 'people_search';
-
-    if (!apiKey) return res.json({ error: 'api_key kerak' });
-
-    // ═══ ENDPOINT MAP ═══
-    const endpoints = {
-      // ENRICHMENT
-      people_enrichment:      { method: 'POST', url: '/people/match' },
-      bulk_people_enrichment: { method: 'POST', url: '/people/bulk_match' },
-      org_enrichment:         { method: 'GET',  url: '/organizations/enrich' },
-      bulk_org_enrichment:    { method: 'POST', url: '/organizations/bulk_enrich' },
-
-      // SEARCH
-      people_search:          { method: 'POST', url: '/mixed_people/api_search' },
-      organization_search:    { method: 'POST', url: '/mixed_companies/search' },
-      org_job_postings:       { method: 'GET',  url: '/organizations/{org_id}/job_postings' },
-      org_complete_info:      { method: 'GET',  url: '/organizations/{org_id}' },
-      news_search:            { method: 'POST', url: '/news/search' },
-
-      // ACCOUNTS (CRM)
-      create_account:         { method: 'POST',  url: '/accounts' },
-      update_account:         { method: 'PATCH', url: '/accounts/{id}' },
-      bulk_create_accounts:   { method: 'POST',  url: '/accounts/bulk_create' },
-      bulk_update_accounts:   { method: 'POST',  url: '/accounts/bulk_update' },
-      search_accounts:        { method: 'POST',  url: '/accounts/search' },
-      view_account:           { method: 'GET',   url: '/accounts/{id}' },
-      update_account_stage:   { method: 'POST',  url: '/accounts/bulk_update_stages' },
-      update_account_owner:   { method: 'POST',  url: '/accounts/bulk_update_owners' },
-      list_account_stages:    { method: 'GET',   url: '/account_stages' },
-
-      // CONTACTS
-      create_contact:         { method: 'POST',  url: '/contacts' },
-      update_contact:         { method: 'PATCH', url: '/contacts/{id}' },
-      bulk_create_contacts:   { method: 'POST',  url: '/contacts/bulk_create' },
-      bulk_update_contacts:   { method: 'POST',  url: '/contacts/bulk_update' },
-      search_contacts:        { method: 'POST',  url: '/contacts/search' },
-      view_contact:           { method: 'GET',   url: '/contacts/{id}' },
-      update_contact_stage:   { method: 'POST',  url: '/contacts/bulk_update_stages' },
-      update_contact_owner:   { method: 'POST',  url: '/contacts/bulk_update_owners' },
-      list_contact_stages:    { method: 'GET',   url: '/contact_stages' },
-
-      // DEALS
-      create_deal:            { method: 'POST',  url: '/deals' },
-      list_deals:             { method: 'GET',   url: '/deals' },
-      view_deal:              { method: 'GET',   url: '/deals/{id}' },
-      update_deal:            { method: 'PATCH', url: '/deals/{id}' },
-      list_deal_stages:       { method: 'GET',   url: '/deal_stages' },
-
-      // SEQUENCES
-      search_sequences:       { method: 'POST', url: '/emailer_campaigns/search' },
-      add_to_sequence:        { method: 'POST', url: '/emailer_campaigns/{id}/add_contact_ids' },
-      update_sequence_status: { method: 'POST', url: '/emailer_campaigns/{id}/update_contact_statuses' },
-      search_emails:          { method: 'GET',  url: '/emailer_messages' },
-      email_stats:            { method: 'GET',  url: '/emailer_campaigns/{id}/stats' },
-
-      // TASKS
-      create_task:            { method: 'POST', url: '/tasks' },
-      search_tasks:           { method: 'POST', url: '/tasks/search' },
-
-      // CALLS
-      create_call:            { method: 'POST', url: '/phone_calls' },
-      search_calls:           { method: 'GET',  url: '/phone_calls' },
-      update_call:            { method: 'PUT',  url: '/phone_calls/{id}' },
-
-      // MISCELLANEOUS
-      api_usage:              { method: 'POST', url: '/usage' },
-      list_users:             { method: 'GET',  url: '/users' },
-      list_email_accounts:    { method: 'GET',  url: '/email_accounts' },
-      list_lists:             { method: 'GET',  url: '/labels' },
-      list_custom_fields:     { method: 'GET',  url: '/typed_custom_fields' },
-      list_fields:            { method: 'GET',  url: '/fields' },
-      create_custom_field:    { method: 'POST', url: '/typed_custom_fields' },
-    };
-
-    const ep = endpoints[action];
-    if (!ep) return res.json({ error: 'Noma\'lum action: ' + action, available: Object.keys(endpoints) });
-
-    // URL'dagi {id}, {org_id} ni almashtirish
-    let url = BASE + ep.url;
-    if (body.id) url = url.replace('{id}', body.id);
-    if (body.org_id) url = url.replace('{org_id}', body.org_id);
-
-    // Query params (GET uchun)
-    const params = { ...body };
-    delete params.action;
-    delete params.api_key;
-    delete params.id;
-    delete params.org_id;
-
-    // GET so'rovlari uchun query string
-    if (ep.method === 'GET') {
-      const qs = new URLSearchParams();
-      Object.keys(params).forEach(k => {
-        if (params[k] !== undefined && params[k] !== null) qs.append(k, params[k]);
-      });
-      const qstr = qs.toString();
-      if (qstr) url += '?' + qstr;
-    }
-
-    // API chaqirish
-    const fetchOpts = {
-      method: ep.method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache',
-        'x-api-key': apiKey,
-        'accept': 'application/json'
-      }
-    };
-
-    // POST/PATCH/PUT uchun body
-    if (['POST', 'PATCH', 'PUT'].includes(ep.method)) {
-      fetchOpts.body = JSON.stringify({ ...params, api_key: apiKey });
-    }
-
-    const resp = await fetch(url, fetchOpts);
-    const data = await resp.json();
-    
-    res.json({ ...data, _action: action, _status: resp.status });
-
-  } catch (e) {
-    res.json({ error: e.message });
-  }
+const B='https://api.apollo.io/api/v1';
+const E={
+people_enrichment:['POST','/people/match'],bulk_people_enrichment:['POST','/people/bulk_match'],
+org_enrichment:['GET','/organizations/enrich'],bulk_org_enrichment:['POST','/organizations/bulk_enrich'],
+people_search:['POST','/mixed_people/api_search'],organization_search:['POST','/mixed_companies/search'],
+org_job_postings:['GET','/organizations/{id}/job_postings'],org_info:['GET','/organizations/{id}'],
+news_search:['POST','/news/search'],
+create_account:['POST','/accounts'],update_account:['PATCH','/accounts/{id}'],
+bulk_create_accounts:['POST','/accounts/bulk_create'],search_accounts:['POST','/accounts/search'],
+view_account:['GET','/accounts/{id}'],list_account_stages:['GET','/account_stages'],
+create_contact:['POST','/contacts'],update_contact:['PATCH','/contacts/{id}'],
+bulk_create_contacts:['POST','/contacts/bulk_create'],search_contacts:['POST','/contacts/search'],
+view_contact:['GET','/contacts/{id}'],list_contact_stages:['GET','/contact_stages'],
+create_deal:['POST','/deals'],list_deals:['GET','/deals'],view_deal:['GET','/deals/{id}'],
+update_deal:['PATCH','/deals/{id}'],list_deal_stages:['GET','/deal_stages'],
+search_sequences:['POST','/emailer_campaigns/search'],
+add_to_sequence:['POST','/emailer_campaigns/{id}/add_contact_ids'],
+create_task:['POST','/tasks'],search_tasks:['POST','/tasks/search'],
+api_usage:['POST','/usage'],list_users:['GET','/users'],
+list_email_accounts:['GET','/email_accounts'],list_lists:['GET','/labels'],
+};
+export default async function handler(req,res){
+res.setHeader('Access-Control-Allow-Origin','*');
+res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,PUT,OPTIONS');
+res.setHeader('Access-Control-Allow-Headers','Content-Type');
+if(req.method==='OPTIONS')return res.status(200).end();
+try{
+const body=typeof req.body==='string'?JSON.parse(req.body):(req.body||{});
+const key=body.api_key||req.query.api_key||process.env.APOLLO_KEY||'';
+const action=body.action||req.query.action||'people_search';
+if(!key)return res.json({error:'api_key kerak'});
+const ep=E[action];
+if(!ep)return res.json({error:'Noma\'lum: '+action,available:Object.keys(E)});
+let url=B+ep[1];
+const p={...body};delete p.action;delete p.api_key;
+if(ep[1].includes('{id}') && p.id){url=url.replace('{id}',p.id);delete p.id;}
+if(ep[0]==='GET'){const q=new URLSearchParams();Object.keys(p).forEach(k=>{if(p[k]!=null)q.append(k,typeof p[k]==='object'?JSON.stringify(p[k]):p[k]);});const s=q.toString();if(s)url+=(url.includes('?')?'&':'?')+s;}
+const o={method:ep[0],headers:{'Content-Type':'application/json','Cache-Control':'no-cache','x-api-key':key,'accept':'application/json'}};
+if(['POST','PATCH','PUT'].includes(ep[0]))o.body=JSON.stringify({...p,api_key:key});
+const r=await fetch(url,o);const d=await r.json();
+res.json({...d,_action:action,_status:r.status});
+}catch(e){res.json({error:e.message});}
 }
