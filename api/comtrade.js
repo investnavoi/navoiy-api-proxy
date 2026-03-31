@@ -1,21 +1,28 @@
 const DEFAULT_COUNTRIES = [
-  { reporterCode: "860", code: "UZ", name: "Uzbekistan" },
-  { reporterCode: "795", code: "TM", name: "Turkmenistan" },
-  { reporterCode: "762", code: "TJ", name: "Tajikistan" },
-  { reporterCode: "417", code: "KG", name: "Kyrgyzstan" },
-  { reporterCode: "398", code: "KZ", name: "Kazakhstan" },
-  { reporterCode: "496", code: "MN", name: "Mongolia" },
-  { reporterCode: "643", code: "RU", name: "Russia" },
-  { reporterCode: "031", code: "AZ", name: "Azerbaijan" },
-  { reporterCode: "268", code: "GE", name: "Georgia" },
-  { reporterCode: "051", code: "AM", name: "Armenia" },
-  { reporterCode: "364", code: "IR", name: "Iran" },
-  { reporterCode: "004", code: "AF", name: "Afghanistan" },
-  { reporterCode: "586", code: "PK", name: "Pakistan" }
+  { reporterCode: "860", code: "UZ", iso3: "UZB", name: "Uzbekistan" },
+  { reporterCode: "795", code: "TM", iso3: "TKM", name: "Turkmenistan" },
+  { reporterCode: "762", code: "TJ", iso3: "TJK", name: "Tajikistan" },
+  { reporterCode: "417", code: "KG", iso3: "KGZ", name: "Kyrgyzstan" },
+  { reporterCode: "398", code: "KZ", iso3: "KAZ", name: "Kazakhstan" },
+  { reporterCode: "496", code: "MN", iso3: "MNG", name: "Mongolia" },
+  { reporterCode: "643", code: "RU", iso3: "RUS", name: "Russia" },
+  { reporterCode: "031", code: "AZ", iso3: "AZE", name: "Azerbaijan" },
+  { reporterCode: "268", code: "GE", iso3: "GEO", name: "Georgia" },
+  { reporterCode: "051", code: "AM", iso3: "ARM", name: "Armenia" },
+  { reporterCode: "364", code: "IR", iso3: "IRN", name: "Iran" },
+  { reporterCode: "004", code: "AF", iso3: "AFG", name: "Afghanistan" },
+  { reporterCode: "586", code: "PK", iso3: "PAK", name: "Pakistan" }
 ];
 
 const YEARS = [2021, 2022, 2023, 2024];
 const REPORTERS_URL = "https://comtradeapi.un.org/files/v1/app/reference/Reporters.json";
+const WITS_BASE = "https://wits.worldbank.org/API/V1/SDMX/V21";
+const WITS_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+  "Accept": "application/json,text/plain,*/*",
+  "Referer": "https://wits.worldbank.org/",
+  "Origin": "https://wits.worldbank.org"
+};
 const COUNTRY_ALIASES = {
   "bolivia": "Bolivia (Plurinational State of)",
   "bosnia and herzegovina": "Bosnia Herzegovina",
@@ -68,6 +75,7 @@ function normalizeText(value) {
 function buildReporterEntry(item, preferredName) {
   return {
     reporterCode: String(item.reporterCode || "").padStart(3, "0"),
+    iso3: item.reporterCodeIsoAlpha3 || "",
     code: item.reporterCodeIsoAlpha2 || preferredName || item.text || "",
     name: preferredName || item.text || ""
   };
@@ -225,12 +233,88 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   };
 }
 
+function mapHsToWitsProductCode(hs) {
+  const chapter = Number(String(hs || "").replace(/\D/g, "").slice(0, 2) || 0);
+  if (!chapter) return null;
+  if (chapter >= 1 && chapter <= 5) return "01-05_Animal";
+  if (chapter >= 6 && chapter <= 15) return "06-15_Vegetable";
+  if (chapter >= 16 && chapter <= 24) return "16-24_FoodProd";
+  if (chapter >= 25 && chapter <= 26) return "25-26_Minerals";
+  if (chapter === 27) return "27-27_Fuels";
+  if (chapter >= 28 && chapter <= 38) return "28-38_Chemicals";
+  if (chapter >= 39 && chapter <= 40) return "39-40_PlastiRub";
+  if (chapter >= 41 && chapter <= 43) return "41-43_HidesSkin";
+  if (chapter >= 44 && chapter <= 49) return "44-49_Wood";
+  if (chapter >= 50 && chapter <= 63) return "50-63_TextCloth";
+  if (chapter >= 64 && chapter <= 67) return "64-67_Footwear";
+  if (chapter >= 68 && chapter <= 71) return "68-71_StoneGlas";
+  if (chapter >= 72 && chapter <= 83) return "72-83_Metals";
+  if (chapter >= 84 && chapter <= 85) return "84-85_MachElec";
+  if (chapter >= 86 && chapter <= 89) return "86-89_Transport";
+  return null;
+}
+
+function parseWitsObservations(json) {
+  const seriesKey = json?.dataSets?.[0]?.series ? Object.keys(json.dataSets[0].series)[0] : "";
+  const series = seriesKey ? json.dataSets[0].series[seriesKey] : null;
+  const observations = series?.observations || {};
+  const observationYears = json?.structure?.dimensions?.observation?.[0]?.values || [];
+  const yearImports = {};
+  const yearStatuses = {};
+
+  YEARS.forEach((year) => {
+    yearImports[String(year)] = 0;
+    yearStatuses[String(year)] = "no_data";
+  });
+
+  observationYears.forEach((item, index) => {
+    const year = String(item?.id || "");
+    if (!yearImports.hasOwnProperty(year)) return;
+    const row = observations[String(index)];
+    if (row && row.length) {
+      yearImports[year] = Number(row[0] || 0) * 1000;
+      yearStatuses[year] = "ok";
+    }
+  });
+
+  const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
+  const latestValue = Number(yearImports["2024"] || yearImports["2023"] || yearImports["2022"] || yearImports["2021"] || 0);
+
+  return {
+    totalValue,
+    latestValue,
+    yearImports,
+    yearStatuses,
+    status: totalValue > 0 ? "ok" : "no_data"
+  };
+}
+
+async function fetchWitsTradeSeries({ iso3, hs }) {
+  const productCode = mapHsToWitsProductCode(hs);
+  if (!iso3) throw new Error("WITS reporter missing");
+  if (!productCode) throw new Error("WITS product group unsupported");
+
+  const url = `${WITS_BASE}/datasource/tradestats-trade/reporter/${String(iso3).toLowerCase()}/year/${YEARS.join(";")}/partner/wld/product/${encodeURIComponent(productCode)}/indicator/MPRT-TRD-VL?format=JSON`;
+  const response = await fetch(url, { headers: WITS_HEADERS });
+  if (!response.ok) {
+    throw new Error(`WITS ${iso3}: ${response.status}`);
+  }
+  const json = await response.json();
+  const parsed = parseWitsObservations(json);
+  return {
+    productCode,
+    desc: json?.structure?.dimensions?.series?.[3]?.values?.[0]?.name || "",
+    ...parsed
+  };
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
     const hs = String(req.query.hs || "2516").replace(/\D/g, "").slice(0, 6) || "2516";
+    const source = String(req.query.source || "comtrade").trim().toLowerCase();
     const key = String(
       process.env.COMTRADE_API_KEY ||
       process.env.COMTRADE_PRIMARY_KEY ||
@@ -243,11 +327,16 @@ export default async function handler(req, res) {
 
     for (const country of requestedCountries) {
       try {
-        const current = await fetchTradeSeries({
-          reporterCode: country.reporterCode,
-          hs,
-          key
-        });
+        const current = source === "wits"
+          ? await fetchWitsTradeSeries({
+              iso3: country.iso3,
+              hs
+            })
+          : await fetchTradeSeries({
+              reporterCode: country.reporterCode,
+              hs,
+              key
+            });
 
         countries.push({
           code: country.code,
@@ -255,24 +344,26 @@ export default async function handler(req, res) {
           reporterCode: country.reporterCode,
           import_usd: current.totalValue,
           latest_import_usd: current.latestValue,
-          volume_tons: Math.round(current.totalWeight / 1000),
+          volume_tons: source === "wits" ? 0 : Math.round(current.totalWeight / 1000),
           trend_pct: null,
           status: current.status,
           year_imports: current.yearImports,
           year_statuses: current.yearStatuses,
-          products: current.rows.map((row) => ({
+          products: Array.isArray(current.rows) ? current.rows.map((row) => ({
             hs: row?.cmdCode || hs,
             period: row?.period || "",
             desc: row?.cmdDesc || current.desc || "",
             value: Number(row?.primaryValue || 0),
             weight: Number(row?.netWgt || 0)
-          }))
+          })) : []
         });
       } catch (error) {
-        console.log("Comtrade error:", country.reporterCode, error.message);
+        console.log(source === "wits" ? "WITS error:" : "Comtrade error:", country.reporterCode || country.iso3, error.message);
         const yearStatuses = {};
         YEARS.forEach((year) => {
-          yearStatuses[String(year)] = String(error.message || "").includes("429") ? "rate_limited" : "error";
+          yearStatuses[String(year)] = source === "wits"
+            ? "error"
+            : (String(error.message || "").includes("429") ? "rate_limited" : "error");
         });
         countries.push({
           code: country.code,
@@ -282,7 +373,9 @@ export default async function handler(req, res) {
           latest_import_usd: 0,
           volume_tons: 0,
           trend_pct: null,
-          status: String(error.message || "").includes("429") ? "rate_limited" : "error",
+          status: source === "wits"
+            ? "error"
+            : (String(error.message || "").includes("429") ? "rate_limited" : "error"),
           year_imports: { "2021": 0, "2022": 0, "2023": 0, "2024": 0 },
           year_statuses: yearStatuses,
           products: []
@@ -300,7 +393,7 @@ export default async function handler(req, res) {
       biggest_market: biggest.name || "",
       fastest_growing: "",
       count: countries.length,
-      source: "UN Comtrade"
+      source: source === "wits" ? "WITS (World Bank · sector-level)" : "UN Comtrade"
     });
   } catch (error) {
     res.status(200).json({
@@ -309,7 +402,7 @@ export default async function handler(req, res) {
       biggest_market: "",
       fastest_growing: "",
       count: 0,
-      source: "UN Comtrade",
+      source: String(req.query.source || "comtrade").trim().toLowerCase() === "wits" ? "WITS (World Bank · sector-level)" : "UN Comtrade",
       error: error.message
     });
   }
