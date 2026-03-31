@@ -16,10 +16,9 @@ const DEFAULT_COUNTRIES = [
 
 const YEARS = [2021, 2022, 2023, 2024];
 const REPORTERS_URL = "https://comtradeapi.un.org/files/v1/app/reference/Reporters.json";
-const WITS_BASE = "https://wits.worldbank.org/API/V1/SDMX/V21";
 const WITS_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-  "Accept": "application/json,text/plain,*/*",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
   "Referer": "https://wits.worldbank.org/",
   "Origin": "https://wits.worldbank.org"
 };
@@ -233,78 +232,68 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   };
 }
 
-function mapHsToWitsProductCode(hs) {
-  const chapter = Number(String(hs || "").replace(/\D/g, "").slice(0, 2) || 0);
-  if (!chapter) return null;
-  if (chapter >= 1 && chapter <= 5) return "01-05_Animal";
-  if (chapter >= 6 && chapter <= 15) return "06-15_Vegetable";
-  if (chapter >= 16 && chapter <= 24) return "16-24_FoodProd";
-  if (chapter >= 25 && chapter <= 26) return "25-26_Minerals";
-  if (chapter === 27) return "27-27_Fuels";
-  if (chapter >= 28 && chapter <= 38) return "28-38_Chemicals";
-  if (chapter >= 39 && chapter <= 40) return "39-40_PlastiRub";
-  if (chapter >= 41 && chapter <= 43) return "41-43_HidesSkin";
-  if (chapter >= 44 && chapter <= 49) return "44-49_Wood";
-  if (chapter >= 50 && chapter <= 63) return "50-63_TextCloth";
-  if (chapter >= 64 && chapter <= 67) return "64-67_Footwear";
-  if (chapter >= 68 && chapter <= 71) return "68-71_StoneGlas";
-  if (chapter >= 72 && chapter <= 83) return "72-83_Metals";
-  if (chapter >= 84 && chapter <= 85) return "84-85_MachElec";
-  if (chapter >= 86 && chapter <= 89) return "86-89_Transport";
-  return null;
+function normalizeWitsHtml(html) {
+  return String(html || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#160;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function parseWitsObservations(json) {
-  const seriesKey = json?.dataSets?.[0]?.series ? Object.keys(json.dataSets[0].series)[0] : "";
-  const series = seriesKey ? json.dataSets[0].series[seriesKey] : null;
-  const observations = series?.observations || {};
-  const observationYears = json?.structure?.dimensions?.observation?.[0]?.values || [];
-  const yearImports = {};
-  const yearStatuses = {};
-
-  YEARS.forEach((year) => {
-    yearImports[String(year)] = 0;
-    yearStatuses[String(year)] = "no_data";
-  });
-
-  observationYears.forEach((item, index) => {
-    const year = String(item?.id || "");
-    if (!yearImports.hasOwnProperty(year)) return;
-    const row = observations[String(index)];
-    if (row && row.length) {
-      yearImports[year] = Number(row[0] || 0) * 1000;
-      yearStatuses[year] = "ok";
-    }
-  });
-
-  const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
-  const latestValue = Number(yearImports["2024"] || yearImports["2023"] || yearImports["2022"] || yearImports["2021"] || 0);
-
+function parseWitsSummary(html) {
+  const text = normalizeWitsHtml(html);
+  const totalMatch = text.match(/was\s+\$([\d,]+(?:\.\d+)?)K\s+and quantity\s+([\d,]+)\s*Kg/i);
+  if (!totalMatch) {
+    return {
+      importUsd: 0,
+      quantityTons: 0,
+      status: /no trade data|no data available|not available/i.test(text) ? "no_data" : "error"
+    };
+  }
   return {
-    totalValue,
-    latestValue,
-    yearImports,
-    yearStatuses,
-    status: totalValue > 0 ? "ok" : "no_data"
+    importUsd: Number(String(totalMatch[1]).replace(/,/g, "")) * 1000,
+    quantityTons: Number(String(totalMatch[2]).replace(/,/g, "")) / 1000,
+    status: "ok"
   };
 }
 
 async function fetchWitsTradeSeries({ iso3, hs }) {
-  const productCode = mapHsToWitsProductCode(hs);
   if (!iso3) throw new Error("WITS reporter missing");
-  if (!productCode) throw new Error("WITS product group unsupported");
+  const yearImports = {};
+  const yearWeights = {};
+  const yearStatuses = {};
 
-  const url = `${WITS_BASE}/datasource/tradestats-trade/reporter/${String(iso3).toLowerCase()}/year/${YEARS.join(";")}/partner/wld/product/${encodeURIComponent(productCode)}/indicator/MPRT-TRD-VL?format=JSON`;
-  const response = await fetch(url, { headers: WITS_HEADERS });
-  if (!response.ok) {
-    throw new Error(`WITS ${iso3}: ${response.status}`);
+  for (const year of YEARS) {
+    yearImports[String(year)] = 0;
+    yearWeights[String(year)] = 0;
+    yearStatuses[String(year)] = "no_data";
+    const url = `https://wits.worldbank.org/trade/comtrade/en/country/${String(iso3).toUpperCase()}/year/${year}/tradeflow/Imports/partner/ALL/product/${encodeURIComponent(hs)}`;
+    const response = await fetch(url, { headers: WITS_HEADERS });
+    if (!response.ok) {
+      yearStatuses[String(year)] = "error";
+      continue;
+    }
+    const html = await response.text();
+    const parsed = parseWitsSummary(html);
+    yearImports[String(year)] = parsed.importUsd;
+    yearWeights[String(year)] = parsed.quantityTons;
+    yearStatuses[String(year)] = parsed.status;
   }
-  const json = await response.json();
-  const parsed = parseWitsObservations(json);
+
+  const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
+  const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
+  const latestValue = Number(yearImports["2024"] || yearImports["2023"] || yearImports["2022"] || yearImports["2021"] || 0);
   return {
-    productCode,
-    desc: json?.structure?.dimensions?.series?.[3]?.values?.[0]?.name || "",
-    ...parsed
+    totalValue,
+    totalWeight,
+    latestValue,
+    yearImports,
+    yearStatuses,
+    status: YEARS.some((year) => yearStatuses[String(year)] === "ok") ? "ok" : "no_data",
+    rows: []
   };
 }
 
@@ -344,7 +333,7 @@ export default async function handler(req, res) {
           reporterCode: country.reporterCode,
           import_usd: current.totalValue,
           latest_import_usd: current.latestValue,
-          volume_tons: source === "wits" ? 0 : Math.round(current.totalWeight / 1000),
+          volume_tons: source === "wits" ? Math.round(current.totalWeight || 0) : Math.round(current.totalWeight / 1000),
           trend_pct: null,
           status: current.status,
           year_imports: current.yearImports,
@@ -393,7 +382,7 @@ export default async function handler(req, res) {
       biggest_market: biggest.name || "",
       fastest_growing: "",
       count: countries.length,
-      source: source === "wits" ? "WITS (World Bank · sector-level)" : "UN Comtrade"
+      source: source === "wits" ? "WITS (World Bank)" : "UN Comtrade"
     });
   } catch (error) {
     res.status(200).json({
@@ -402,7 +391,7 @@ export default async function handler(req, res) {
       biggest_market: "",
       fastest_growing: "",
       count: 0,
-      source: String(req.query.source || "comtrade").trim().toLowerCase() === "wits" ? "WITS (World Bank · sector-level)" : "UN Comtrade",
+      source: String(req.query.source || "comtrade").trim().toLowerCase() === "wits" ? "WITS (World Bank)" : "UN Comtrade",
       error: error.message
     });
   }
