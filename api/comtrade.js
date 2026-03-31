@@ -1,4 +1,4 @@
-const TARGET_COUNTRIES = [
+const DEFAULT_COUNTRIES = [
   { reporterCode: "860", code: "UZ", name: "Uzbekistan" },
   { reporterCode: "795", code: "TM", name: "Turkmenistan" },
   { reporterCode: "762", code: "TJ", name: "Tajikistan" },
@@ -15,6 +15,34 @@ const TARGET_COUNTRIES = [
 ];
 
 const YEARS = [2021, 2022, 2023, 2024];
+const REPORTERS_URL = "https://comtradeapi.un.org/files/v1/app/reference/Reporters.json";
+const COUNTRY_ALIASES = {
+  "bolivia": "Bolivia (Plurinational State of)",
+  "bosnia and herzegovina": "Bosnia Herzegovina",
+  "brunei": "Brunei Darussalam",
+  "central african republic": "Central African Rep.",
+  "czech republic": "Czechia",
+  "dr congo": "Dem. Rep. of the Congo",
+  "dominican republic": "Dominican Rep.",
+  "ivory coast": "CI",
+  "laos": "Lao People's Dem. Rep.",
+  "liechtenstein": "CH",
+  "marshall islands": "Marshall Isds",
+  "micronesia": "FS Micronesia",
+  "moldova": "Rep. of Moldova",
+  "monaco": "FR",
+  "north korea": "Dem. People's Rep. of Korea",
+  "palestine": "State of Palestine",
+  "russia": "Russian Federation",
+  "solomon islands": "Solomon Isds",
+  "south korea": "Rep. of Korea",
+  "tanzania": "United Rep. of Tanzania",
+  "turkey": "TR",
+  "united states": "US",
+  "vatican city": "Holy See (Vatican City State)",
+  "vietnam": "Viet Nam"
+};
+let reportersLookupPromise = null;
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -26,14 +54,98 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalizeCountryList(rawCodes) {
-  if (!rawCodes) return TARGET_COUNTRIES;
-  const allowed = new Map(TARGET_COUNTRIES.map((item) => [item.reporterCode, item]));
-  return rawCodes
-    .split(",")
-    .map((code) => code.trim())
-    .filter((code) => allowed.has(code))
-    .map((code) => allowed.get(code));
+function normalizeText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function buildReporterEntry(item, preferredName) {
+  return {
+    reporterCode: String(item.reporterCode || "").padStart(3, "0"),
+    code: item.reporterCodeIsoAlpha2 || preferredName || item.text || "",
+    name: preferredName || item.text || ""
+  };
+}
+
+async function getReportersLookup() {
+  if (!reportersLookupPromise) {
+    reportersLookupPromise = fetch(REPORTERS_URL)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Reporters ${response.status}`);
+        return response.json();
+      })
+      .then((json) => {
+        const results = Array.isArray(json?.results) ? json.results.filter((item) => !item?.isGroup) : [];
+        const byCode = new Map();
+        const byIso2 = new Map();
+        const byIso3 = new Map();
+        const byName = new Map();
+        results.forEach((item) => {
+          const reporterCode = String(item?.reporterCode || "").padStart(3, "0");
+          if (reporterCode) byCode.set(reporterCode, item);
+          if (item?.reporterCodeIsoAlpha2) byIso2.set(String(item.reporterCodeIsoAlpha2).toUpperCase(), item);
+          if (item?.reporterCodeIsoAlpha3) byIso3.set(String(item.reporterCodeIsoAlpha3).toUpperCase(), item);
+          [item?.text, item?.reporterDesc, item?.reporterNote].forEach((value) => {
+            const normalized = normalizeText(value);
+            if (normalized && !byName.has(normalized)) byName.set(normalized, item);
+          });
+        });
+        return { byCode, byIso2, byIso3, byName };
+      })
+      .catch((error) => {
+        reportersLookupPromise = null;
+        throw error;
+      });
+  }
+  return reportersLookupPromise;
+}
+
+async function normalizeCountryList(rawCodes) {
+  if (!rawCodes) return DEFAULT_COUNTRIES;
+  const lookup = await getReportersLookup();
+  const tokens = String(rawCodes)
+    .split(/[|,]/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const resolved = [];
+  const seen = new Set();
+
+  tokens.forEach((token) => {
+    let item = null;
+    const numeric = /^\d+$/.test(token) ? String(token).padStart(3, "0") : "";
+    if (numeric && lookup.byCode.has(numeric)) {
+      item = lookup.byCode.get(numeric);
+    } else {
+      const upper = token.toUpperCase();
+      const normalized = normalizeText(token);
+      const alias = COUNTRY_ALIASES[normalized];
+      const aliasNormalized = alias ? normalizeText(alias) : "";
+      const aliasUpper = alias ? String(alias).toUpperCase() : "";
+      const aliasNumeric = alias && /^\d+$/.test(String(alias)) ? String(alias).padStart(3, "0") : "";
+      item =
+        lookup.byIso2.get(upper) ||
+        lookup.byIso3.get(upper) ||
+        (aliasUpper ? lookup.byIso2.get(aliasUpper) : null) ||
+        (aliasUpper ? lookup.byIso3.get(aliasUpper) : null) ||
+        (aliasNumeric ? lookup.byCode.get(aliasNumeric) : null) ||
+        lookup.byName.get(normalized) ||
+        (aliasNormalized ? lookup.byName.get(aliasNormalized) : null) ||
+        null;
+    }
+    if (!item) return;
+    const entry = buildReporterEntry(item, token);
+    if (!entry.reporterCode || seen.has(entry.reporterCode)) return;
+    seen.add(entry.reporterCode);
+    resolved.push(entry);
+  });
+
+  return resolved;
 }
 
 function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
@@ -125,7 +237,7 @@ export default async function handler(req, res) {
       req.query.key ||
       ""
     ).trim();
-    const requestedCountries = normalizeCountryList(req.query.countries);
+    const requestedCountries = await normalizeCountryList(req.query.countries);
 
     const countries = [];
 
