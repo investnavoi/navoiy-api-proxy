@@ -234,7 +234,7 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
     reporterCode,
     period: periods.join(","),
     flowCode: "M",
-    partnerCode: "0",
+    partnerCode: "all",
     partner2Code: "0",
     customsCode: "C00",
     motCode: "0",
@@ -310,12 +310,13 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     : Array.isArray(json?.dataset)
       ? json.dataset
       : [];
+  // Keep all partner rows (partner2Code=0, customsCode=C00, motCode=0)
+  // partnerCode can be any value (0=World, or specific partner countries)
   const totalRows = rows.filter((row) => {
-    const partnerCode = Number(row?.partnerCode ?? -1);
     const partner2Code = Number(row?.partner2Code ?? -1);
     const customsCode = String(row?.customsCode || "");
     const motCode = Number(row?.motCode ?? -1);
-    return partnerCode === 0 && partner2Code === 0 && customsCode === "C00" && motCode === 0;
+    return partner2Code === 0 && customsCode === "C00" && motCode === 0;
   });
   const sourceRows = totalRows.length ? totalRows : rows;
 
@@ -335,18 +336,16 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     }
   });
 
-  sourceRows.forEach((row) => {
+  // For yearImports totals, use only World (partnerCode=0) rows to avoid double-counting
+  const worldRows = sourceRows.filter((row) => Number(row?.partnerCode ?? -1) === 0);
+  const totalRowsForSum = worldRows.length ? worldRows : sourceRows;
+  totalRowsForSum.forEach((row) => {
     const year = String(row?.period || "");
     if (!yearImports.hasOwnProperty(year)) return;
     const value = Number(row?.primaryValue || 0);
     const weight = Number(row?.netWgt || 0);
-    if (totalRows.length) {
-      yearImports[year] = value;
-      yearWeights[year] = weight;
-    } else {
-      yearImports[year] += value;
-      yearWeights[year] += weight;
-    }
+    yearImports[year] += value;
+    yearWeights[year] += weight;
     yearStatuses[year] = (value || weight) ? "ok" : yearStatuses[year];
   });
 
