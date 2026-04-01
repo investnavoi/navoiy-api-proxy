@@ -452,7 +452,7 @@ export default async function handler(req, res) {
 
     for (const country of requestedCountries) {
       try {
-        let current = source === "wits"
+        const current = source === "wits"
           ? await fetchWitsTradeSeries({
               iso3: country.iso3,
               hs
@@ -462,22 +462,7 @@ export default async function handler(req, res) {
               hs,
               key
             });
-        let sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
-
-        if (source !== "wits" && (!current || current.status !== "ok") && country.iso3) {
-          try {
-            const fallback = await fetchWitsTradeSeries({
-              iso3: country.iso3,
-              hs
-            });
-            if (fallback && fallback.status === "ok") {
-              current = fallback;
-              sourceUsed = "UN Comtrade (WITS mirror fallback)";
-            }
-          } catch (fallbackError) {
-            // Ignore mirror fallback errors and keep the original Comtrade failure below.
-          }
-        }
+        const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
         countries.push({
           code: country.code,
