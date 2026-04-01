@@ -378,6 +378,39 @@ function normalizeWitsHtml(html) {
     .trim();
 }
 
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => {
+      try { return String.fromCharCode(parseInt(code, 16)); } catch (_) { return ""; }
+    })
+    .replace(/&#(\d+);/g, (_, code) => {
+      try { return String.fromCharCode(parseInt(code, 10)); } catch (_) { return ""; }
+    })
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;|&apos;/gi, "'");
+}
+
+function cleanWitsCell(html) {
+  return decodeHtmlEntities(
+    String(html || "")
+      .replace(/<br\s*\/?>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  ).trim();
+}
+
+function parseLooseNumber(value) {
+  const raw = String(value || "").replace(/,/g, "").trim();
+  if (!raw) return 0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function parseWitsSummary(html) {
   const text = normalizeWitsHtml(html);
   const totalMatch = text.match(/was\s+\$([\d,]+(?:\.\d+)?)K\s+and quantity\s+([\d,]+)\s*Kg/i);
@@ -395,11 +428,40 @@ function parseWitsSummary(html) {
   };
 }
 
+function parseWitsDetailRows(html) {
+  const tableMatch = String(html || "").match(/<table[^>]+id=['"]dataCatalogMetadata['"][^>]*>([\s\S]*?)<\/table>/i);
+  if (!tableMatch) return [];
+  const rows = [];
+  const rowMatches = tableMatch[1].match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  rowMatches.forEach((rowHtml) => {
+    const cells = [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => cleanWitsCell(match[1]));
+    if (cells.length < 9) return;
+    if (/^reporter$/i.test(cells[0])) return;
+    rows.push({
+      reporter: cells[0],
+      tradeFlow: cells[1],
+      cmdCode: cells[2],
+      cmdDesc: cells[3],
+      period: cells[4],
+      partner: cells[5],
+      tradeValue1000Usd: parseLooseNumber(cells[6]),
+      primaryValue: parseLooseNumber(cells[6]) * 1000,
+      qty: parseLooseNumber(cells[7]),
+      netWgt: parseLooseNumber(cells[7]),
+      qtyUnit: cells[8],
+      quantityUnit: cells[8],
+      sourceType: "wits"
+    });
+  });
+  return rows;
+}
+
 async function fetchWitsTradeSeries({ iso3, hs }) {
   if (!iso3) throw new Error("WITS reporter missing");
   const yearImports = {};
   const yearWeights = {};
   const yearStatuses = {};
+  const detailRows = [];
 
   for (const year of YEARS) {
     yearImports[String(year)] = 0;
@@ -413,14 +475,17 @@ async function fetchWitsTradeSeries({ iso3, hs }) {
     }
     const html = await response.text();
     const parsed = parseWitsSummary(html);
+    const parsedRows = parseWitsDetailRows(html);
     yearImports[String(year)] = parsed.importUsd;
     yearWeights[String(year)] = parsed.quantityTons;
     yearStatuses[String(year)] = parsed.status;
+    if (parsedRows.length) detailRows.push(...parsedRows);
   }
 
   const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
   const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
   const latestValue = Number(yearImports["2024"] || yearImports["2023"] || yearImports["2022"] || yearImports["2021"] || 0);
+  const firstDesc = detailRows.find((row) => row?.cmdDesc)?.cmdDesc || "";
   return {
     totalValue,
     totalWeight,
@@ -429,7 +494,8 @@ async function fetchWitsTradeSeries({ iso3, hs }) {
     yearStatuses,
     weightUnit: "tons",
     status: YEARS.some((year) => yearStatuses[String(year)] === "ok") ? "ok" : "no_data",
-    rows: []
+    rows: detailRows,
+    desc: firstDesc
   };
 }
 
@@ -483,7 +549,14 @@ export default async function handler(req, res) {
             period: row?.period || "",
             desc: row?.cmdDesc || current.desc || "",
             value: Number(row?.primaryValue || 0),
-            weight: Number(row?.netWgt || 0)
+            weight: Number(row?.netWgt || 0),
+            reporter: row?.reporter || country.name,
+            tradeFlow: row?.tradeFlow || "Import",
+            partner: row?.partner || "",
+            tradeValue1000Usd: Number(row?.tradeValue1000Usd || 0),
+            quantity: Number(row?.qty || row?.netWgt || 0),
+            quantityUnit: row?.qtyUnit || row?.quantityUnit || "",
+            sourceType: row?.sourceType || source
           })) : []
         });
       } catch (error) {
