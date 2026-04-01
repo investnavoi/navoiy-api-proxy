@@ -17,8 +17,8 @@ const DEFAULT_COUNTRIES = [
 const YEARS = [2021, 2022, 2023, 2024];
 const REPORTERS_URL = "https://comtradeapi.un.org/files/v1/app/reference/Reporters.json";
 const WITS_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Referer": "https://wits.worldbank.org/",
   "Origin": "https://wits.worldbank.org"
 };
@@ -56,32 +56,18 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+  try { return await fetch(url, { ...options, signal: controller.signal }); }
+  finally { clearTimeout(timer); }
 }
 
 function normalizeText(value) {
-  return String(value || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
 }
 
 function buildReporterEntry(item, preferredName) {
@@ -96,32 +82,23 @@ function buildReporterEntry(item, preferredName) {
 async function getReportersLookup() {
   if (!reportersLookupPromise) {
     reportersLookupPromise = fetch(REPORTERS_URL)
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Reporters ${response.status}`);
-        return response.json();
-      })
-      .then((json) => {
-        const results = Array.isArray(json?.results) ? json.results.filter((item) => !item?.isGroup) : [];
-        const byCode = new Map();
-        const byIso2 = new Map();
-        const byIso3 = new Map();
-        const byName = new Map();
-        results.forEach((item) => {
-          const reporterCode = String(item?.reporterCode || "").padStart(3, "0");
-          if (reporterCode) byCode.set(reporterCode, item);
+      .then(async r => { if (!r.ok) throw new Error(`Reporters ${r.status}`); return r.json(); })
+      .then(json => {
+        const results = Array.isArray(json?.results) ? json.results.filter(i => !i?.isGroup) : [];
+        const byCode = new Map(), byIso2 = new Map(), byIso3 = new Map(), byName = new Map();
+        results.forEach(item => {
+          const rc = String(item?.reporterCode || "").padStart(3, "0");
+          if (rc) byCode.set(rc, item);
           if (item?.reporterCodeIsoAlpha2) byIso2.set(String(item.reporterCodeIsoAlpha2).toUpperCase(), item);
           if (item?.reporterCodeIsoAlpha3) byIso3.set(String(item.reporterCodeIsoAlpha3).toUpperCase(), item);
-          [item?.text, item?.reporterDesc, item?.reporterNote].forEach((value) => {
-            const normalized = normalizeText(value);
-            if (normalized && !byName.has(normalized)) byName.set(normalized, item);
+          [item?.text, item?.reporterDesc, item?.reporterNote].forEach(v => {
+            const n = normalizeText(v);
+            if (n && !byName.has(n)) byName.set(n, item);
           });
         });
         return { byCode, byIso2, byIso3, byName };
       })
-      .catch((error) => {
-        reportersLookupPromise = null;
-        throw error;
-      });
+      .catch(e => { reportersLookupPromise = null; throw e; });
   }
   return reportersLookupPromise;
 }
@@ -129,34 +106,24 @@ async function getReportersLookup() {
 async function normalizeCountryList(rawCodes) {
   if (!rawCodes) return DEFAULT_COUNTRIES;
   const lookup = await getReportersLookup();
-  const tokens = String(rawCodes)
-    .split(/[|,]/)
-    .map((token) => token.trim())
-    .filter(Boolean);
-  const resolved = [];
-  const seen = new Set();
-
-  tokens.forEach((token) => {
+  const tokens = String(rawCodes).split(/[|,]/).map(t => t.trim()).filter(Boolean);
+  const resolved = [], seen = new Set();
+  tokens.forEach(token => {
     let item = null;
     const numeric = /^\d+$/.test(token) ? String(token).padStart(3, "0") : "";
-    if (numeric && lookup.byCode.has(numeric)) {
-      item = lookup.byCode.get(numeric);
-    } else {
-      const upper = token.toUpperCase();
-      const normalized = normalizeText(token);
+    if (numeric && lookup.byCode.has(numeric)) item = lookup.byCode.get(numeric);
+    else {
+      const upper = token.toUpperCase(), normalized = normalizeText(token);
       const alias = COUNTRY_ALIASES[normalized];
       const aliasNormalized = alias ? normalizeText(alias) : "";
       const aliasUpper = alias ? String(alias).toUpperCase() : "";
       const aliasNumeric = alias && /^\d+$/.test(String(alias)) ? String(alias).padStart(3, "0") : "";
-      item =
-        lookup.byIso2.get(upper) ||
-        lookup.byIso3.get(upper) ||
+      item = lookup.byIso2.get(upper) || lookup.byIso3.get(upper) ||
         (aliasUpper ? lookup.byIso2.get(aliasUpper) : null) ||
         (aliasUpper ? lookup.byIso3.get(aliasUpper) : null) ||
         (aliasNumeric ? lookup.byCode.get(aliasNumeric) : null) ||
         lookup.byName.get(normalized) ||
-        (aliasNormalized ? lookup.byName.get(aliasNormalized) : null) ||
-        null;
+        (aliasNormalized ? lookup.byName.get(aliasNormalized) : null) || null;
     }
     if (!item) return;
     const entry = buildReporterEntry(item, token);
@@ -164,7 +131,6 @@ async function normalizeCountryList(rawCodes) {
     seen.add(entry.reporterCode);
     resolved.push(entry);
   });
-
   return resolved;
 }
 
@@ -192,304 +158,216 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
   const maxRecords = hasKey ? 500 : 200;
 
-  async function requestPeriods(periods) {
-    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords });
-    let response = null;
-    let lastStatus = 0;
-    let lastError = null;
+  // MUHIM: Public API 6-raqamli HS kodni qabul qilmaydi — faqat 2 yoki 4 raqam
+  // Key bo'lmasa, HS kodni 4 raqamga qisqartirish KERAK
+  const effectiveHs = hasKey ? hs : (hs.length > 4 ? hs.slice(0, 4) : hs);
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+  async function requestPeriods(periods) {
+    const url = buildUrl({ reporterCode, hs: effectiveHs, periods, hasKey, maxRecords });
+    let response = null, lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         response = await fetchWithTimeout(url, { headers }, 12000 + (attempt * 4000));
-        lastStatus = response.status;
-        if (response.ok) {
-          return await response.json();
-        }
-        if (response.status !== 429 || attempt === 2) {
-          throw new Error(`Comtrade ${reporterCode}: ${response.status}`);
-        }
-      } catch (error) {
-        lastError = error;
-        if (attempt === 2 && (!response || !response.ok)) {
-          throw error?.name === "AbortError"
-            ? new Error(`Comtrade ${reporterCode}: timeout`)
-            : error;
-        }
+        if (response.ok) return await response.json();
+        if (response.status !== 429 || attempt === 2) throw new Error(`Comtrade ${reporterCode}: ${response.status}`);
+      } catch (e) {
+        lastError = e;
+        if (attempt === 2) throw e?.name === "AbortError" ? new Error(`Comtrade ${reporterCode}: timeout`) : e;
       }
       await sleep(1200 * (attempt + 1));
     }
-
-    throw lastError || new Error(`Comtrade ${reporterCode}: ${lastStatus || 0}`);
+    throw lastError || new Error(`Comtrade ${reporterCode}: failed`);
   }
 
   let payload = null;
-  let usedPeriods = YEARS.slice();
-  try {
-    payload = await requestPeriods(YEARS);
-  } catch (error) {
+  try { payload = await requestPeriods(YEARS); }
+  catch (error) {
     const fallbackRows = [];
     for (const year of YEARS) {
       try {
-        const yearPayload = await requestPeriods([year]);
-        const yearRows = Array.isArray(yearPayload?.data)
-          ? yearPayload.data
-          : Array.isArray(yearPayload?.dataset)
-            ? yearPayload.dataset
-            : [];
-        fallbackRows.push(...yearRows);
-      } catch (yearError) {
-        // Keep going so we can still return partial exact totals for other years.
-      }
+        const yp = await requestPeriods([year]);
+        const yr = Array.isArray(yp?.data) ? yp.data : Array.isArray(yp?.dataset) ? yp.dataset : [];
+        fallbackRows.push(...yr);
+      } catch (_) {}
     }
     if (!fallbackRows.length) throw error;
     payload = { data: fallbackRows };
-    usedPeriods = YEARS.slice();
   }
 
-  const json = payload || {};
-  const rows = Array.isArray(json?.data)
-    ? json.data
-    : Array.isArray(json?.dataset)
-      ? json.dataset
-      : [];
-  const totalRows = rows.filter((row) => {
-    const partnerCode = Number(row?.partnerCode ?? -1);
-    const partner2Code = Number(row?.partner2Code ?? -1);
-    const customsCode = String(row?.customsCode || "");
-    const motCode = Number(row?.motCode ?? -1);
-    return partnerCode === 0 && partner2Code === 0 && customsCode === "C00" && motCode === 0;
-  });
-  const sourceRows = totalRows.length ? totalRows : rows;
+  const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.dataset) ? payload.dataset : [];
 
-  const yearImports = {};
-  const yearWeights = {};
-  const yearStatuses = {};
-  usedPeriods.forEach((year) => {
-    yearImports[String(year)] = 0;
-    yearWeights[String(year)] = 0;
-    yearStatuses[String(year)] = "no_data";
-  });
-  YEARS.forEach((year) => {
-    if (!Object.prototype.hasOwnProperty.call(yearImports, String(year))) {
-      yearImports[String(year)] = 0;
-      yearWeights[String(year)] = 0;
-      yearStatuses[String(year)] = "error";
-    }
+  // MUHIM FIX: faqat so'ralgan cmdCode ga mos qatorlarni filtrlash
+  // Public API ba'zan boshqa sub-code'larni ham qaytaradi
+  const hsFilteredRows = rows.filter(row => {
+    const rowCmd = String(row?.cmdCode || "");
+    // Aniq mos yoki parent code mos
+    return rowCmd === effectiveHs || rowCmd.startsWith(effectiveHs) || effectiveHs.startsWith(rowCmd);
   });
 
-  sourceRows.forEach((row) => {
-    const year = String(row?.period || "");
-    if (!yearImports.hasOwnProperty(year)) return;
-    const value = Number(row?.primaryValue || 0);
-    const weight = Number(row?.netWgt || 0);
-    if (totalRows.length) {
-      yearImports[year] = value;
-      yearWeights[year] = weight;
-    } else {
-      yearImports[year] += value;
-      yearWeights[year] += weight;
-    }
-    yearStatuses[year] = (value || weight) ? "ok" : yearStatuses[year];
+  // partnerCode=0 (World total) qatorlarni filtrlash
+  const totalRows = hsFilteredRows.filter(row => {
+    return Number(row?.partnerCode ?? -1) === 0 &&
+           Number(row?.partner2Code ?? -1) === 0 &&
+           String(row?.customsCode || "") === "C00" &&
+           Number(row?.motCode ?? -1) === 0;
   });
 
-  const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
-  const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
-  const firstDesc = sourceRows.find((row) => row?.cmdDesc)?.cmdDesc || "";
+  // Agar World total qatorlar bo'lmasa — individual partner qatorlarini YILLIK yig'ish
+  const useAggregation = totalRows.length === 0 && hsFilteredRows.length > 0;
+  
+  const yearImports = {}, yearWeights = {}, yearStatuses = {};
+  YEARS.forEach(y => { yearImports[String(y)] = 0; yearWeights[String(y)] = 0; yearStatuses[String(y)] = "no_data"; });
+
+  if (useAggregation) {
+    // Individual partners — yillik yig'ish
+    const yearSeen = {};
+    hsFilteredRows.forEach(row => {
+      const year = String(row?.period || "");
+      if (!yearImports.hasOwnProperty(year)) return;
+      const partnerKey = year + "_" + String(row?.partnerCode || "");
+      if (yearSeen[partnerKey]) return; // dublikat oldini olish
+      yearSeen[partnerKey] = true;
+      yearImports[year] += Number(row?.primaryValue || 0);
+      yearWeights[year] += Number(row?.netWgt || 0);
+      yearStatuses[year] = "ok";
+    });
+  } else {
+    // World total — to'g'ridan-to'g'ri
+    totalRows.forEach(row => {
+      const year = String(row?.period || "");
+      if (!yearImports.hasOwnProperty(year)) return;
+      yearImports[year] = Number(row?.primaryValue || 0);
+      yearWeights[year] = Number(row?.netWgt || 0);
+      yearStatuses[year] = (yearImports[year] || yearWeights[year]) ? "ok" : yearStatuses[year];
+    });
+  }
+
+  const sourceRows = totalRows.length ? totalRows : hsFilteredRows;
+  const totalValue = YEARS.reduce((s, y) => s + Number(yearImports[String(y)] || 0), 0);
+  const totalWeight = YEARS.reduce((s, y) => s + Number(yearWeights[String(y)] || 0), 0);
+  const firstDesc = sourceRows.find(r => r?.cmdDesc)?.cmdDesc || "";
 
   return {
     rows: sourceRows,
-    totalValue,
-    totalWeight,
+    totalValue, totalWeight,
     desc: firstDesc,
     latestValue: Number(yearImports["2024"] || 0),
-    yearImports,
-    yearStatuses,
+    yearImports, yearStatuses,
     weightUnit: "kg",
-    status: sourceRows.length > 0 ? "ok" : "no_data"
+    status: sourceRows.length > 0 ? "ok" : "no_data",
+    hs_requested: hs,
+    hs_used: effectiveHs,
+    hs_level: hasKey ? "HS" + effectiveHs.length : "HS" + effectiveHs.length + " (key yo'q, public API)"
   };
 }
 
 function normalizeWitsHtml(html) {
-  return String(html || "")
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&#160;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return String(html || "").replace(/[\r\n\t]+/g, " ").replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;/gi, " ").replace(/\s+/g, " ").trim();
 }
 
 function parseWitsSummary(html) {
   const text = normalizeWitsHtml(html);
-  const totalMatch = text.match(/was\s+\$([\d,]+(?:\.\d+)?)K\s+and quantity\s+([\d,]+)\s*Kg/i);
-  if (!totalMatch) {
-    return {
-      importUsd: 0,
-      quantityTons: 0,
-      status: /no trade data|no data available|not available/i.test(text) ? "no_data" : "error"
-    };
-  }
-  return {
-    importUsd: Number(String(totalMatch[1]).replace(/,/g, "")) * 1000,
-    quantityTons: Number(String(totalMatch[2]).replace(/,/g, "")) / 1000,
-    status: "ok"
-  };
+  const m = text.match(/was\s+\$([\d,]+(?:\.\d+)?)K\s+and quantity\s+([\d,]+)\s*Kg/i);
+  if (!m) return { importUsd: 0, quantityTons: 0, status: /no trade data|no data/i.test(text) ? "no_data" : "error" };
+  return { importUsd: Number(String(m[1]).replace(/,/g, "")) * 1000, quantityTons: Number(String(m[2]).replace(/,/g, "")) / 1000, status: "ok" };
 }
 
 async function fetchWitsTradeSeries({ iso3, hs }) {
   if (!iso3) throw new Error("WITS reporter missing");
-  const yearImports = {};
-  const yearWeights = {};
-  const yearStatuses = {};
-
+  const yearImports = {}, yearWeights = {}, yearStatuses = {};
   for (const year of YEARS) {
-    yearImports[String(year)] = 0;
-    yearWeights[String(year)] = 0;
-    yearStatuses[String(year)] = "no_data";
+    yearImports[String(year)] = 0; yearWeights[String(year)] = 0; yearStatuses[String(year)] = "no_data";
     const url = `https://wits.worldbank.org/trade/comtrade/en/country/${String(iso3).toUpperCase()}/year/${year}/tradeflow/Imports/partner/ALL/product/${encodeURIComponent(hs)}`;
-    const response = await fetch(url, { headers: WITS_HEADERS });
-    if (!response.ok) {
-      yearStatuses[String(year)] = "error";
-      continue;
-    }
-    const html = await response.text();
-    const parsed = parseWitsSummary(html);
-    yearImports[String(year)] = parsed.importUsd;
-    yearWeights[String(year)] = parsed.quantityTons;
-    yearStatuses[String(year)] = parsed.status;
+    try {
+      const r = await fetch(url, { headers: WITS_HEADERS });
+      if (!r.ok) { yearStatuses[String(year)] = "error"; continue; }
+      const parsed = parseWitsSummary(await r.text());
+      yearImports[String(year)] = parsed.importUsd;
+      yearWeights[String(year)] = parsed.quantityTons;
+      yearStatuses[String(year)] = parsed.status;
+    } catch (_) { yearStatuses[String(year)] = "error"; }
   }
-
-  const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
-  const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
-  const latestValue = Number(yearImports["2024"] || yearImports["2023"] || yearImports["2022"] || yearImports["2021"] || 0);
+  const totalValue = YEARS.reduce((s, y) => s + Number(yearImports[String(y)] || 0), 0);
+  const totalWeight = YEARS.reduce((s, y) => s + Number(yearWeights[String(y)] || 0), 0);
   return {
-    totalValue,
-    totalWeight,
-    latestValue,
-    yearImports,
-    yearStatuses,
-    weightUnit: "tons",
-    status: YEARS.some((year) => yearStatuses[String(year)] === "ok") ? "ok" : "no_data",
-    rows: []
+    totalValue, totalWeight,
+    latestValue: Number(yearImports["2024"] || yearImports["2023"] || 0),
+    yearImports, yearStatuses, weightUnit: "tons",
+    status: YEARS.some(y => yearStatuses[String(y)] === "ok") ? "ok" : "no_data",
+    rows: [], hs_requested: hs, hs_used: hs, hs_level: "WITS"
   };
 }
 
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
-
   try {
     const hs = String(req.query.hs || "2516").replace(/\D/g, "").slice(0, 6) || "2516";
     const source = String(req.query.source || "comtrade").trim().toLowerCase();
-    const key = String(
-      process.env.COMTRADE_API_KEY ||
-      process.env.COMTRADE_PRIMARY_KEY ||
-      req.query.key ||
-      ""
-    ).trim();
+    const key = String(process.env.COMTRADE_API_KEY || process.env.COMTRADE_PRIMARY_KEY || req.query.key || "").trim();
     const requestedCountries = await normalizeCountryList(req.query.countries);
-
     const countries = [];
 
     for (const country of requestedCountries) {
       try {
         let current = source === "wits"
-          ? await fetchWitsTradeSeries({
-              iso3: country.iso3,
-              hs
-            })
-          : await fetchTradeSeries({
-              reporterCode: country.reporterCode,
-              hs,
-              key
-            });
+          ? await fetchWitsTradeSeries({ iso3: country.iso3, hs })
+          : await fetchTradeSeries({ reporterCode: country.reporterCode, hs, key });
         let sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
         if (source !== "wits" && (!current || current.status !== "ok") && country.iso3) {
           try {
-            const fallback = await fetchWitsTradeSeries({
-              iso3: country.iso3,
-              hs
-            });
-            if (fallback && fallback.status === "ok") {
-              current = fallback;
-              sourceUsed = "UN Comtrade (WITS mirror fallback)";
-            }
-          } catch (fallbackError) {
-            // Ignore mirror fallback errors and keep the original Comtrade failure below.
-          }
+            const fb = await fetchWitsTradeSeries({ iso3: country.iso3, hs });
+            if (fb && fb.status === "ok") { current = fb; sourceUsed = "WITS (fallback)"; }
+          } catch (_) {}
         }
 
         countries.push({
-          code: country.code,
-          name: country.name,
-          reporterCode: country.reporterCode,
+          code: country.code, name: country.name, reporterCode: country.reporterCode,
           import_usd: current.totalValue,
           latest_import_usd: current.latestValue,
-          volume_tons: current.weightUnit === "tons"
-            ? Math.round(current.totalWeight || 0)
-            : Math.round((current.totalWeight || 0) / 1000),
+          volume_tons: current.weightUnit === "tons" ? Math.round(current.totalWeight || 0) : Math.round((current.totalWeight || 0) / 1000),
           trend_pct: null,
           status: current.status,
           source_used: sourceUsed,
           year_imports: current.yearImports,
           year_statuses: current.yearStatuses,
-          products: Array.isArray(current.rows) ? current.rows.map((row) => ({
-            hs: row?.cmdCode || hs,
-            period: row?.period || "",
-            desc: row?.cmdDesc || current.desc || "",
-            value: Number(row?.primaryValue || 0),
-            weight: Number(row?.netWgt || 0)
+          hs_requested: current.hs_requested || hs,
+          hs_used: current.hs_used || hs,
+          hs_level: current.hs_level || "",
+          products: Array.isArray(current.rows) ? current.rows.map(r => ({
+            hs: r?.cmdCode || hs, period: r?.period || "",
+            desc: r?.cmdDesc || current.desc || "",
+            value: Number(r?.primaryValue || 0), weight: Number(r?.netWgt || 0)
           })) : []
         });
       } catch (error) {
-        console.log(source === "wits" ? "WITS error:" : "Comtrade error:", country.reporterCode || country.iso3, error.message);
-        const yearStatuses = {};
-        YEARS.forEach((year) => {
-          yearStatuses[String(year)] = source === "wits"
-            ? "error"
-            : (String(error.message || "").includes("429") ? "rate_limited" : "error");
-        });
+        const ys = {}; YEARS.forEach(y => { ys[String(y)] = "error"; });
         countries.push({
-          code: country.code,
-          name: country.name,
-          reporterCode: country.reporterCode,
-          import_usd: 0,
-          latest_import_usd: 0,
-          volume_tons: 0,
-          trend_pct: null,
-          status: source === "wits"
-            ? "error"
-            : (String(error.message || "").includes("429") ? "rate_limited" : "error"),
+          code: country.code, name: country.name, reporterCode: country.reporterCode,
+          import_usd: 0, latest_import_usd: 0, volume_tons: 0, trend_pct: null,
+          status: String(error.message || "").includes("429") ? "rate_limited" : "error",
           year_imports: { "2021": 0, "2022": 0, "2023": 0, "2024": 0 },
-          year_statuses: yearStatuses,
-          products: []
+          year_statuses: ys, products: []
         });
       }
     }
 
-    const okCountries = countries.filter((country) => country.status === "ok");
-    const total = okCountries.reduce((sum, country) => sum + Number(country.import_usd || 0), 0);
-    const biggest = okCountries.slice().sort((a, b) => (b.import_usd || 0) - (a.import_usd || 0))[0] || {};
+    const okC = countries.filter(c => c.status === "ok");
+    const total = okC.reduce((s, c) => s + Number(c.import_usd || 0), 0);
+    const biggest = okC.slice().sort((a, b) => (b.import_usd || 0) - (a.import_usd || 0))[0] || {};
 
     res.status(200).json({
-      countries,
-      total_usd: total,
-      biggest_market: biggest.name || "",
-      fastest_growing: "",
-      count: countries.length,
+      countries, total_usd: total, biggest_market: biggest.name || "",
+      count: countries.length, hs_requested: hs, hs_used: key ? hs : (hs.length > 4 ? hs.slice(0,4) : hs),
+      has_key: Boolean(key),
       source: source === "wits" ? "WITS (World Bank)" : "UN Comtrade"
     });
   } catch (error) {
     res.status(200).json({
-      countries: [],
-      total_usd: 0,
-      biggest_market: "",
-      fastest_growing: "",
-      count: 0,
-      source: String(req.query.source || "comtrade").trim().toLowerCase() === "wits" ? "WITS (World Bank)" : "UN Comtrade",
-      error: error.message
+      countries: [], total_usd: 0, count: 0, error: error.message,
+      source: String(req.query.source || "comtrade").trim().toLowerCase() === "wits" ? "WITS" : "UN Comtrade"
     });
   }
 }
