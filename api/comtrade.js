@@ -60,6 +60,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function normalizeText(value) {
   return String(value || "")
     .normalize("NFD")
@@ -163,6 +176,10 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
     reporterCode,
     period: periods.join(","),
     flowCode: "M",
+    partnerCode: "0",
+    partner2Code: "0",
+    customsCode: "C00",
+    motCode: "0",
     cmdCode: String(hs),
     maxRecords: String(maxRecords),
     includeDesc: "true"
@@ -172,63 +189,123 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
 
 async function fetchTradeSeries({ reporterCode, hs, key }) {
   const hasKey = Boolean(key);
-  const maxRecords = hasKey ? 5000 : 1000;
-  const url = buildUrl({ reporterCode, hs, periods: YEARS, hasKey, maxRecords });
   const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
-  let response = null;
-  let lastStatus = 0;
+  const maxRecords = hasKey ? 500 : 200;
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    response = await fetch(url, { headers });
-    lastStatus = response.status;
-    if (response.ok) break;
-    if (response.status !== 429 || attempt === 2) {
-      throw new Error(`Comtrade ${reporterCode}: ${response.status}`);
+  async function requestPeriods(periods) {
+    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords });
+    let response = null;
+    let lastStatus = 0;
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        response = await fetchWithTimeout(url, { headers }, 12000 + (attempt * 4000));
+        lastStatus = response.status;
+        if (response.ok) {
+          return await response.json();
+        }
+        if (response.status !== 429 || attempt === 2) {
+          throw new Error(`Comtrade ${reporterCode}: ${response.status}`);
+        }
+      } catch (error) {
+        lastError = error;
+        if (attempt === 2 && (!response || !response.ok)) {
+          throw error?.name === "AbortError"
+            ? new Error(`Comtrade ${reporterCode}: timeout`)
+            : error;
+        }
+      }
+      await sleep(1200 * (attempt + 1));
     }
-    await sleep(1200 * (attempt + 1));
+
+    throw lastError || new Error(`Comtrade ${reporterCode}: ${lastStatus || 0}`);
   }
 
-  if (!response || !response.ok) {
-    throw new Error(`Comtrade ${reporterCode}: ${lastStatus || 0}`);
+  let payload = null;
+  let usedPeriods = YEARS.slice();
+  try {
+    payload = await requestPeriods(YEARS);
+  } catch (error) {
+    const fallbackRows = [];
+    for (const year of YEARS) {
+      try {
+        const yearPayload = await requestPeriods([year]);
+        const yearRows = Array.isArray(yearPayload?.data)
+          ? yearPayload.data
+          : Array.isArray(yearPayload?.dataset)
+            ? yearPayload.dataset
+            : [];
+        fallbackRows.push(...yearRows);
+      } catch (yearError) {
+        // Keep going so we can still return partial exact totals for other years.
+      }
+    }
+    if (!fallbackRows.length) throw error;
+    payload = { data: fallbackRows };
+    usedPeriods = YEARS.slice();
   }
 
-  const json = await response.json();
+  const json = payload || {};
   const rows = Array.isArray(json?.data)
     ? json.data
     : Array.isArray(json?.dataset)
       ? json.dataset
       : [];
+  const totalRows = rows.filter((row) => {
+    const partnerCode = Number(row?.partnerCode ?? -1);
+    const partner2Code = Number(row?.partner2Code ?? -1);
+    const customsCode = String(row?.customsCode || "");
+    const motCode = Number(row?.motCode ?? -1);
+    return partnerCode === 0 && partner2Code === 0 && customsCode === "C00" && motCode === 0;
+  });
+  const sourceRows = totalRows.length ? totalRows : rows;
 
   const yearImports = {};
   const yearWeights = {};
   const yearStatuses = {};
-  YEARS.forEach((year) => {
+  usedPeriods.forEach((year) => {
     yearImports[String(year)] = 0;
     yearWeights[String(year)] = 0;
     yearStatuses[String(year)] = "no_data";
   });
+  YEARS.forEach((year) => {
+    if (!Object.prototype.hasOwnProperty.call(yearImports, String(year))) {
+      yearImports[String(year)] = 0;
+      yearWeights[String(year)] = 0;
+      yearStatuses[String(year)] = "error";
+    }
+  });
 
-  rows.forEach((row) => {
+  sourceRows.forEach((row) => {
     const year = String(row?.period || "");
     if (!yearImports.hasOwnProperty(year)) return;
-    yearImports[year] += Number(row?.primaryValue || 0);
-    yearWeights[year] += Number(row?.netWgt || 0);
-    yearStatuses[year] = "ok";
+    const value = Number(row?.primaryValue || 0);
+    const weight = Number(row?.netWgt || 0);
+    if (totalRows.length) {
+      yearImports[year] = value;
+      yearWeights[year] = weight;
+    } else {
+      yearImports[year] += value;
+      yearWeights[year] += weight;
+    }
+    yearStatuses[year] = (value || weight) ? "ok" : yearStatuses[year];
   });
 
   const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
   const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
-  const firstDesc = rows.find((row) => row?.cmdDesc)?.cmdDesc || "";
+  const firstDesc = sourceRows.find((row) => row?.cmdDesc)?.cmdDesc || "";
 
   return {
-    rows,
+    rows: sourceRows,
     totalValue,
     totalWeight,
     desc: firstDesc,
     latestValue: Number(yearImports["2024"] || 0),
     yearImports,
     yearStatuses,
-    status: rows.length > 0 ? "ok" : "no_data"
+    weightUnit: "kg",
+    status: sourceRows.length > 0 ? "ok" : "no_data"
   };
 }
 
@@ -292,6 +369,7 @@ async function fetchWitsTradeSeries({ iso3, hs }) {
     latestValue,
     yearImports,
     yearStatuses,
+    weightUnit: "tons",
     status: YEARS.some((year) => yearStatuses[String(year)] === "ok") ? "ok" : "no_data",
     rows: []
   };
@@ -316,7 +394,7 @@ export default async function handler(req, res) {
 
     for (const country of requestedCountries) {
       try {
-        const current = source === "wits"
+        let current = source === "wits"
           ? await fetchWitsTradeSeries({
               iso3: country.iso3,
               hs
@@ -326,6 +404,22 @@ export default async function handler(req, res) {
               hs,
               key
             });
+        let sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
+
+        if (source !== "wits" && (!current || current.status !== "ok") && country.iso3) {
+          try {
+            const fallback = await fetchWitsTradeSeries({
+              iso3: country.iso3,
+              hs
+            });
+            if (fallback && fallback.status === "ok") {
+              current = fallback;
+              sourceUsed = "UN Comtrade (WITS mirror fallback)";
+            }
+          } catch (fallbackError) {
+            // Ignore mirror fallback errors and keep the original Comtrade failure below.
+          }
+        }
 
         countries.push({
           code: country.code,
@@ -333,9 +427,12 @@ export default async function handler(req, res) {
           reporterCode: country.reporterCode,
           import_usd: current.totalValue,
           latest_import_usd: current.latestValue,
-          volume_tons: source === "wits" ? Math.round(current.totalWeight || 0) : Math.round(current.totalWeight / 1000),
+          volume_tons: current.weightUnit === "tons"
+            ? Math.round(current.totalWeight || 0)
+            : Math.round((current.totalWeight || 0) / 1000),
           trend_pct: null,
           status: current.status,
+          source_used: sourceUsed,
           year_imports: current.yearImports,
           year_statuses: current.yearStatuses,
           products: Array.isArray(current.rows) ? current.rows.map((row) => ({
