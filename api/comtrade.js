@@ -234,6 +234,25 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
     reporterCode,
     period: periods.join(","),
     flowCode: "M",
+    partnerCode: "0",
+    partner2Code: "0",
+    customsCode: "C00",
+    motCode: "0",
+    cmdCode: String(hs),
+    maxRecords: String(maxRecords),
+    includeDesc: "true"
+  });
+  return `${base}?${params.toString()}`;
+}
+
+function buildUrlPartners({ reporterCode, hs, periods, hasKey, maxRecords }) {
+  const base = hasKey
+    ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
+    : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
+  const params = new URLSearchParams({
+    reporterCode,
+    period: periods.join(","),
+    flowCode: "M",
     partnerCode: "all",
     partner2Code: "0",
     customsCode: "C00",
@@ -250,8 +269,10 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
   const maxRecords = hasKey ? 500 : 200;
 
-  async function requestPeriods(periods) {
-    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords });
+  async function requestPeriods(periods, usePartners) {
+    const url = usePartners
+      ? buildUrlPartners({ reporterCode, hs, periods, hasKey, maxRecords })
+      : buildUrl({ reporterCode, hs, periods, hasKey, maxRecords });
     let response = null;
     let lastStatus = 0;
     let lastError = null;
@@ -283,12 +304,12 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   let payload = null;
   let usedPeriods = YEARS.slice();
   try {
-    payload = await requestPeriods(YEARS);
+    payload = await requestPeriods(YEARS, hasKey);
   } catch (error) {
     const fallbackRows = [];
     for (const year of YEARS) {
       try {
-        const yearPayload = await requestPeriods([year]);
+        const yearPayload = await requestPeriods([year], hasKey);
         const yearRows = Array.isArray(yearPayload?.data)
           ? yearPayload.data
           : Array.isArray(yearPayload?.dataset)
@@ -310,15 +331,19 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     : Array.isArray(json?.dataset)
       ? json.dataset
       : [];
-  // Keep all partner rows (partner2Code=0, customsCode=C00, motCode=0)
-  // partnerCode can be any value (0=World, or specific partner countries)
-  const totalRows = rows.filter((row) => {
+  // Filter valid rows
+  const allFilteredRows = rows.filter((row) => {
     const partner2Code = Number(row?.partner2Code ?? -1);
     const customsCode = String(row?.customsCode || "");
     const motCode = Number(row?.motCode ?? -1);
     return partner2Code === 0 && customsCode === "C00" && motCode === 0;
   });
-  const sourceRows = totalRows.length ? totalRows : rows;
+  // World-only rows (partnerCode=0) for totals
+  const worldOnlyRows = allFilteredRows.filter((row) => Number(row?.partnerCode ?? -1) === 0);
+  // Use world rows for totals if available, otherwise all filtered
+  const totalRows = worldOnlyRows.length ? worldOnlyRows : allFilteredRows;
+  // sourceRows includes all partners for breakdown table
+  const sourceRows = allFilteredRows.length ? allFilteredRows : rows;
 
   const yearImports = {};
   const yearWeights = {};
@@ -336,10 +361,8 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     }
   });
 
-  // For yearImports totals, use only World (partnerCode=0) rows to avoid double-counting
-  const worldRows = sourceRows.filter((row) => Number(row?.partnerCode ?? -1) === 0);
-  const totalRowsForSum = worldRows.length ? worldRows : sourceRows;
-  totalRowsForSum.forEach((row) => {
+  // Use worldOnly rows for yearImports totals to avoid double-counting
+  totalRows.forEach((row) => {
     const year = String(row?.period || "");
     if (!yearImports.hasOwnProperty(year)) return;
     const value = Number(row?.primaryValue || 0);
