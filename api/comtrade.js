@@ -568,6 +568,8 @@ export default async function handler(req, res) {
             weight: Number(row?.netWgt || 0),
             reporter: row?.reporter || country.name,
             tradeFlow: row?.tradeFlow || "Import",
+            partnerCode: Number(row?.partnerCode ?? -1),
+            partner: row?.partnerDesc || row?.partner || "",
             partner: row?.partner || "",
             tradeValue1000Usd: Number(row?.tradeValue1000Usd || 0),
             quantity: Number(row?.qty || row?.netWgt || 0),
