@@ -226,7 +226,7 @@ async function normalizeCountryList(rawCodes) {
   return resolved;
 }
 
-function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
+function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCode }) {
   const base = hasKey
     ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
     : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
@@ -234,7 +234,7 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords }) {
     reporterCode,
     period: periods.join(","),
     flowCode: "M",
-    partnerCode: "0",
+    partnerCode: partnerCode || "0",
     partner2Code: "0",
     customsCode: "C00",
     motCode: "0",
@@ -252,8 +252,10 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${hasKey}`);
 
   async function requestPeriods(periods) {
-    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords });
-    console.log(`[Comtrade] URL: ${url.substring(0, 120)}`);
+    // With API key: fetch all partners; without key: fetch World aggregate only
+    const partnerCode = hasKey ? "all" : "0";
+    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCode });
+    console.log(`[Comtrade] URL: ${url.substring(0, 150)}`);
     let response = null;
     let lastStatus = 0;
     let lastError = null;
@@ -315,14 +317,18 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     : Array.isArray(json?.dataset)
       ? json.dataset
       : [];
-  const totalRows = rows.filter((row) => {
-    const partnerCode = Number(row?.partnerCode ?? -1);
+  // Filter by partner2Code, customsCode, motCode — always
+  const filteredRows = rows.filter((row) => {
     const partner2Code = Number(row?.partner2Code ?? -1);
     const customsCode = String(row?.customsCode || "");
     const motCode = Number(row?.motCode ?? -1);
-    return partnerCode === 0 && partner2Code === 0 && customsCode === "C00" && motCode === 0;
+    return partner2Code === 0 && customsCode === "C00" && motCode === 0;
   });
-  const sourceRows = totalRows.length ? totalRows : rows;
+  // World-only rows for KPI totals (avoid double-counting)
+  const worldRows = filteredRows.filter((row) => Number(row?.partnerCode ?? -1) === 0);
+  const totalRows = worldRows.length ? worldRows : filteredRows;
+  // All rows (including per-partner) for breakdown table
+  const sourceRows = filteredRows.length ? filteredRows : rows;
 
   const yearImports = {};
   const yearWeights = {};
