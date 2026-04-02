@@ -249,9 +249,11 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   const hasKey = Boolean(key);
   const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
   const maxRecords = hasKey ? 500 : 200;
+  console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${hasKey}`);
 
   async function requestPeriods(periods) {
     const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords });
+    console.log(`[Comtrade] URL: ${url.substring(0, 120)}`);
     let response = null;
     let lastStatus = 0;
     let lastError = null;
@@ -260,11 +262,14 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
       try {
         response = await fetchWithTimeout(url, { headers }, 12000 + (attempt * 4000));
         lastStatus = response.status;
+        console.log(`[Comtrade] status=${response.status} attempt=${attempt}`);
         if (response.ok) {
           return await response.json();
         }
         if (response.status !== 429 || attempt === 2) {
-          throw new Error(`Comtrade ${reporterCode}: ${response.status}`);
+          const errBody = await response.text().catch(() => '');
+          console.log(`[Comtrade] error body: ${errBody.substring(0, 200)}`);
+          throw new Error(`Comtrade ${reporterCode}: ${response.status} ${errBody.substring(0,100)}`);
         }
       } catch (error) {
         lastError = error;
@@ -340,13 +345,8 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     if (!yearImports.hasOwnProperty(year)) return;
     const value = Number(row?.primaryValue || 0);
     const weight = Number(row?.netWgt || 0);
-    if (totalRows.length) {
-      yearImports[year] = value;
-      yearWeights[year] = weight;
-    } else {
-      yearImports[year] += value;
-      yearWeights[year] += weight;
-    }
+    yearImports[year] += value;
+    yearWeights[year] += weight;
     yearStatuses[year] = (value || weight) ? "ok" : yearStatuses[year];
   });
 
