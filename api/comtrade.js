@@ -226,7 +226,7 @@ async function normalizeCountryList(rawCodes) {
   return resolved;
 }
 
-function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner }) {
+function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, partnerCodes }) {
   const base = hasKey
     ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
     : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
@@ -241,22 +241,23 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner }
     maxRecords: String(maxRecords),
     includeDesc: "true"
   };
-  // With key: omit partnerCode = all partners breakdown
-  // Without key: partnerCode=0 = World aggregate only
-  if (!omitPartner) {
+  if (partnerCodes && partnerCodes.length > 0) {
+    // Specific partners requested — always include World(0) for totals
+    paramsObj.partnerCode = ["0", ...partnerCodes].join(",");
+  } else if (!omitPartner) {
     paramsObj.partnerCode = "0";
   }
   return `${base}?${new URLSearchParams(paramsObj).toString()}`;
 }
 
-async function fetchTradeSeries({ reporterCode, hs, key }) {
+async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
   const hasKey = Boolean(key);
   const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
   const maxRecords = hasKey ? 500 : 200;
   console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${hasKey}`);
 
   async function requestPeriods(periods) {
-    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner: hasKey });
+    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner: hasKey, partnerCodes: partnerCodesFilter });
     console.log(`[Comtrade] URL: ${url.substring(0, 150)}`);
     let response = null;
     let lastStatus = 0;
@@ -535,6 +536,17 @@ export default async function handler(req, res) {
     ).trim();
     const requestedCountries = await normalizeCountryList(req.query.countries);
 
+    // Resolve source countries to Comtrade partner codes
+    const sourceCountriesParam = String(req.query.sourceCountries || "").trim();
+    let partnerCodesFilter = [];
+    if (sourceCountriesParam) {
+      const sourceNames = sourceCountriesParam.split("|").map(s => s.trim()).filter(Boolean);
+      const resolvedSources = await normalizeCountryList(sourceNames.join("|"));
+      partnerCodesFilter = resolvedSources
+        .map(c => String(c.reporterCode || "").replace(/^0+/, "") || null)
+        .filter(Boolean);
+    }
+
     const countries = [];
 
     for (const country of requestedCountries) {
@@ -547,7 +559,8 @@ export default async function handler(req, res) {
           : await fetchTradeSeries({
               reporterCode: country.reporterCode,
               hs,
-              key
+              key,
+              partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
             });
         const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
