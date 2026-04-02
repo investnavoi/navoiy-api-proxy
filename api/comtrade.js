@@ -230,18 +230,22 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCode }
   const base = hasKey
     ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
     : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
-  const params = new URLSearchParams({
+  const paramsObj = {
     reporterCode,
     period: periods.join(","),
     flowCode: "M",
-    partnerCode: partnerCode || "0",
     partner2Code: "0",
     customsCode: "C00",
     motCode: "0",
     cmdCode: String(hs),
     maxRecords: String(maxRecords),
     includeDesc: "true"
-  });
+  };
+  // partnerCode=0 means World aggregate; omitting it means all partners (premium only)
+  if (partnerCode !== null && partnerCode !== undefined) {
+    paramsObj.partnerCode = String(partnerCode);
+  }
+  const params = new URLSearchParams(paramsObj);
   return `${base}?${params.toString()}`;
 }
 
@@ -252,8 +256,8 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${hasKey}`);
 
   async function requestPeriods(periods) {
-    // With API key: fetch all partners; without key: fetch World aggregate only
-    const partnerCode = hasKey ? "all" : "0";
+    // With API key: omit partnerCode = all partners; without key: partnerCode=0 = World only
+    const partnerCode = hasKey ? null : "0";
     const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCode });
     console.log(`[Comtrade] URL: ${url.substring(0, 150)}`);
     let response = null;
