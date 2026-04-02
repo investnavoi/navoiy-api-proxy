@@ -319,6 +319,11 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     : Array.isArray(json?.dataset)
       ? json.dataset
       : [];
+  if(rows.length > 0) {
+    const sampleKeys = Object.keys(rows[0] || {}).filter(k => k.toLowerCase().includes('partner')).join(',');
+    console.log(`[Comtrade] partner fields in row: ${sampleKeys}`);
+    console.log(`[Comtrade] sample partnerCode=${rows[0]?.partnerCode} partnerDesc=${rows[0]?.partnerDesc}`);
+  }
   const allFiltered = rows.filter((row) => {
     const partner2Code = Number(row?.partner2Code ?? -1);
     const customsCode = String(row?.customsCode || "");
@@ -569,8 +574,7 @@ export default async function handler(req, res) {
             reporter: row?.reporter || country.name,
             tradeFlow: row?.tradeFlow || "Import",
             partnerCode: Number(row?.partnerCode ?? -1),
-            partner: row?.partnerDesc || row?.partner || "",
-            partner: row?.partner || "",
+            partner: row?.partnerDesc || row?.partner || row?.ptTitle || "",
             tradeValue1000Usd: Number(row?.tradeValue1000Usd || 0),
             quantity: Number(row?.qty || row?.netWgt || 0),
             quantityUnit: row?.qtyUnit || row?.quantityUnit || "",
