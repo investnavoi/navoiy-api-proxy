@@ -226,7 +226,7 @@ async function normalizeCountryList(rawCodes) {
   return resolved;
 }
 
-function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCode }) {
+function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner }) {
   const base = hasKey
     ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
     : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
@@ -241,12 +241,12 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCode }
     maxRecords: String(maxRecords),
     includeDesc: "true"
   };
-  // partnerCode=0 means World aggregate; omitting it means all partners (premium only)
-  if (partnerCode !== null && partnerCode !== undefined) {
-    paramsObj.partnerCode = String(partnerCode);
+  // With key: omit partnerCode = all partners breakdown
+  // Without key: partnerCode=0 = World aggregate only
+  if (!omitPartner) {
+    paramsObj.partnerCode = "0";
   }
-  const params = new URLSearchParams(paramsObj);
-  return `${base}?${params.toString()}`;
+  return `${base}?${new URLSearchParams(paramsObj).toString()}`;
 }
 
 async function fetchTradeSeries({ reporterCode, hs, key }) {
@@ -256,9 +256,7 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
   console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${hasKey}`);
 
   async function requestPeriods(periods) {
-    // With API key: omit partnerCode = all partners; without key: partnerCode=0 = World only
-    const partnerCode = hasKey ? null : "0";
-    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCode });
+    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner: hasKey });
     console.log(`[Comtrade] URL: ${url.substring(0, 150)}`);
     let response = null;
     let lastStatus = 0;
@@ -321,18 +319,17 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     : Array.isArray(json?.dataset)
       ? json.dataset
       : [];
-  // Filter by partner2Code, customsCode, motCode — always
-  const filteredRows = rows.filter((row) => {
+  const allFiltered = rows.filter((row) => {
     const partner2Code = Number(row?.partner2Code ?? -1);
     const customsCode = String(row?.customsCode || "");
     const motCode = Number(row?.motCode ?? -1);
     return partner2Code === 0 && customsCode === "C00" && motCode === 0;
   });
-  // World-only rows for KPI totals (avoid double-counting)
-  const worldRows = filteredRows.filter((row) => Number(row?.partnerCode ?? -1) === 0);
-  const totalRows = worldRows.length ? worldRows : filteredRows;
-  // All rows (including per-partner) for breakdown table
-  const sourceRows = filteredRows.length ? filteredRows : rows;
+  // World rows (partnerCode=0) for KPI totals — avoid double counting
+  const worldRows = allFiltered.filter((row) => Number(row?.partnerCode ?? -1) === 0);
+  const totalRows = worldRows.length ? worldRows : allFiltered;
+  // All partner rows for breakdown table
+  const sourceRows = allFiltered.length ? allFiltered : rows;
 
   const yearImports = {};
   const yearWeights = {};
@@ -350,9 +347,18 @@ async function fetchTradeSeries({ reporterCode, hs, key }) {
     }
   });
 
-  sourceRows.forEach((row) => {
+  // For yearImports: prefer World (partnerCode=0) rows; fall back to summing all if no World row
+  const hasWorldRows = totalRows.some((row) => Number(row?.partnerCode ?? -1) === 0);
+  const sumRows = hasWorldRows ? totalRows : allFiltered;
+  // If World rows exist, use only them (no double-counting)
+  // If no World rows, sum all partner rows
+  const seenYears = new Set();
+  sumRows.forEach((row) => {
     const year = String(row?.period || "");
     if (!yearImports.hasOwnProperty(year)) return;
+    const pCode = Number(row?.partnerCode ?? -1);
+    // If world rows exist, skip non-world rows
+    if (hasWorldRows && pCode !== 0) return;
     const value = Number(row?.primaryValue || 0);
     const weight = Number(row?.netWgt || 0);
     yearImports[year] += value;
