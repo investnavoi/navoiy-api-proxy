@@ -331,10 +331,20 @@ async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
     const motCode = Number(row?.motCode ?? -1);
     return partner2Code === 0 && customsCode === "C00" && motCode === 0;
   });
-  // World rows (partnerCode=0) for KPI totals — avoid double counting
+  // If partnerCodesFilter active: use only those partner rows for totals
+  // Otherwise: use World (partnerCode=0) rows for totals
+  const requestedCodes = (partnerCodesFilter && partnerCodesFilter.length)
+    ? partnerCodesFilter.map(c => String(c))
+    : null;
   const worldRows = allFiltered.filter((row) => Number(row?.partnerCode ?? -1) === 0);
-  const totalRows = worldRows.length ? worldRows : allFiltered;
-  // All partner rows for breakdown table
+  const filteredPartnerRows = requestedCodes
+    ? allFiltered.filter((row) => requestedCodes.includes(String(row?.partnerCode ?? "")))
+    : null;
+  // For totals: use filtered partners if requested, else World aggregate
+  const totalRows = filteredPartnerRows
+    ? (filteredPartnerRows.length ? filteredPartnerRows : allFiltered.filter(r => requestedCodes.includes(String(r?.partnerCode??""))))
+    : (worldRows.length ? worldRows : allFiltered);
+  // sourceRows for breakdown table
   const sourceRows = allFiltered.length ? allFiltered : rows;
 
   const yearImports = {};
@@ -353,18 +363,10 @@ async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
     }
   });
 
-  // For yearImports: prefer World (partnerCode=0) rows; fall back to summing all if no World row
-  const hasWorldRows = totalRows.some((row) => Number(row?.partnerCode ?? -1) === 0);
-  const sumRows = hasWorldRows ? totalRows : allFiltered;
-  // If World rows exist, use only them (no double-counting)
-  // If no World rows, sum all partner rows
-  const seenYears = new Set();
-  sumRows.forEach((row) => {
+  // Sum yearImports from totalRows (filtered partners or World aggregate)
+  totalRows.forEach((row) => {
     const year = String(row?.period || "");
     if (!yearImports.hasOwnProperty(year)) return;
-    const pCode = Number(row?.partnerCode ?? -1);
-    // If world rows exist, skip non-world rows
-    if (hasWorldRows && pCode !== 0) return;
     const value = Number(row?.primaryValue || 0);
     const weight = Number(row?.netWgt || 0);
     yearImports[year] += value;
