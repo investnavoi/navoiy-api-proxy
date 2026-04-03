@@ -1,39 +1,32 @@
-import https from "https";
-
 function sendJson(res, payload, statusCode = 200) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
 }
 
-function fetchText(url, accept = "application/json,text/plain,*/*") {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          "Accept": accept
-        }
+async function fetchText(url, accept = "application/json,text/plain,*/*") {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": accept
       },
-      (resp) => {
-        let raw = "";
-        resp.on("data", (chunk) => {
-          raw += chunk;
-        });
-        resp.on("end", () => {
-          resolve({
-            statusCode: resp.statusCode || 0,
-            body: raw
-          });
-        });
-      }
-    );
-    req.on("error", reject);
-    req.setTimeout(20000, () => {
-      req.destroy(new Error("World Bank timeout"));
+      signal: controller.signal
     });
-  });
+    return {
+      statusCode: response.status,
+      body: await response.text()
+    };
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error("World Bank timeout");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function parseCsv(text) {
@@ -107,6 +100,51 @@ function latestIloUsdValue(rows) {
   return null;
 }
 
+async function fetchWorldBankIndicatorForCountry(iso3, indicator, format, date, perPage) {
+  const url =
+    "https://api.worldbank.org/v2/country/" +
+    encodeURIComponent(iso3) +
+    "/indicator/" +
+    encodeURIComponent(indicator) +
+    "?format=" +
+    encodeURIComponent(format) +
+    "&date=" +
+    encodeURIComponent(date) +
+    "&per_page=" +
+    encodeURIComponent(perPage);
+  const response = await fetchText(url);
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(`World Bank ${response.statusCode}`);
+  }
+  const json = JSON.parse(response.body);
+  return Array.isArray(json) ? json : [null, []];
+}
+
+async function fetchWorldBankIndicatorMultiCountry(countries, indicator, format, date, perPage) {
+  const combinedRows = [];
+  let sourceMeta = null;
+  for (const iso3 of countries) {
+    try {
+      const json = await fetchWorldBankIndicatorForCountry(iso3, indicator, format, date, perPage);
+      if (!sourceMeta && json[0]) sourceMeta = json[0];
+      if (Array.isArray(json[1])) combinedRows.push(...json[1]);
+    } catch (_error) {
+      // Skip failed countries and let the frontend show available rows.
+    }
+  }
+  return [
+    {
+      page: 1,
+      pages: 1,
+      per_page: combinedRows.length || 0,
+      total: combinedRows.length || 0,
+      sourceid: sourceMeta?.sourceid || "2",
+      lastupdated: sourceMeta?.lastupdated || ""
+    },
+    combinedRows
+  ];
+}
+
 async function fetchIlostatMonthlyWage(iso3) {
   const url = `https://rplumber.ilo.org/data/indicator?id=EAR_EMTA_SEX_CUR_NB_A&ref_area=${encodeURIComponent(iso3)}&sex=SEX_T&latestyear=TRUE&format=.csv&type=label&mode=B`;
   const response = await fetchText(url, "text/csv,text/plain,application/json");
@@ -173,36 +211,19 @@ export default async function handler(req, res) {
     const perPage = String(query.per_page || "500").trim() || "500";
     const format = String(query.format || "json").trim() || "json";
 
-    const url =
-      "https://api.worldbank.org/v2/country/" +
-      encodeURIComponent(country) +
-      "/indicator/" +
-      encodeURIComponent(indicator) +
-      "?format=" +
-      encodeURIComponent(format) +
-      "&date=" +
-      encodeURIComponent(date) +
-      "&per_page=" +
-      encodeURIComponent(perPage);
-
-    const response = await fetchText(url);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      sendJson(res, {
-        error: `World Bank ${response.statusCode}`,
-        url,
-        details: response.body.slice(0, 1000)
-      });
-      return;
-    }
-
     try {
-      const data = JSON.parse(response.body);
+      const countries = country
+        .split(";")
+        .map((item) => String(item || "").trim().toUpperCase())
+        .filter(Boolean);
+      const uniqueCountries = [...new Set(countries)];
+      const data = uniqueCountries.length > 1
+        ? await fetchWorldBankIndicatorMultiCountry(uniqueCountries, indicator, format, date, perPage)
+        : await fetchWorldBankIndicatorForCountry(uniqueCountries[0] || country, indicator, format, date, perPage);
       sendJson(res, data);
     } catch (parseError) {
       sendJson(res, {
-        error: "World Bank invalid JSON",
-        url,
-        details: response.body.slice(0, 1000)
+        error: parseError && parseError.message ? parseError.message : "World Bank invalid JSON"
       });
     }
   } catch (error) {
