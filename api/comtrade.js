@@ -226,10 +226,9 @@ async function normalizeCountryList(rawCodes) {
   return resolved;
 }
 
-function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, partnerCodes }) {
-  const base = hasKey
-    ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
-    : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
+function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, partnerCodes, key }) {
+  // Always use public preview endpoint — key passed as subscription-key param
+  const base = "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
   const paramsObj = {
     reporterCode,
     period: periods.join(","),
@@ -247,17 +246,19 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, 
   } else if (!omitPartner) {
     paramsObj.partnerCode = "0";
   }
+  if (key) paramsObj['subscription-key'] = key;
   return `${base}?${new URLSearchParams(paramsObj).toString()}`;
 }
 
 async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
   const hasKey = Boolean(key);
+  // Try key as both header and query param for compatibility
   const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
   const maxRecords = hasKey ? 500 : 200;
   console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${hasKey}`);
 
   async function requestPeriods(periods) {
-    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner: hasKey, partnerCodes: partnerCodesFilter });
+    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner: hasKey, partnerCodes: partnerCodesFilter, key });
     console.log(`[Comtrade] URL: ${url.substring(0, 150)}`);
     let response = null;
     let lastStatus = 0;
