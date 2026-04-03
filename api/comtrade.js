@@ -488,24 +488,23 @@ async function fetchWitsTradeSeries({ iso3, hs }) {
   const yearStatuses = {};
   const detailRows = [];
 
-  for (const year of YEARS) {
+  await Promise.all(YEARS.map(async (year) => {
     yearImports[String(year)] = 0;
     yearWeights[String(year)] = 0;
     yearStatuses[String(year)] = "no_data";
     const url = `https://wits.worldbank.org/trade/comtrade/en/country/${String(iso3).toUpperCase()}/year/${year}/tradeflow/Imports/partner/ALL/product/${encodeURIComponent(hs)}`;
-    const response = await fetchWithTimeout(url, { headers: WITS_HEADERS }, 18000);
-    if (!response.ok) {
-      yearStatuses[String(year)] = "error";
-      continue;
-    }
-    const html = await response.text();
-    const parsed = parseWitsSummary(html);
-    const parsedRows = parseWitsDetailRows(html);
-    yearImports[String(year)] = parsed.importUsd;
-    yearWeights[String(year)] = parsed.quantityTons;
-    yearStatuses[String(year)] = parsed.status;
-    if (parsedRows.length) detailRows.push(...parsedRows);
-  }
+    try {
+      const response = await fetchWithTimeout(url, { headers: WITS_HEADERS }, 18000);
+      if (!response.ok) { yearStatuses[String(year)] = "error"; return; }
+      const html = await response.text();
+      const parsed = parseWitsSummary(html);
+      const parsedRows = parseWitsDetailRows(html);
+      yearImports[String(year)] = parsed.importUsd;
+      yearWeights[String(year)] = parsed.quantityTons;
+      yearStatuses[String(year)] = parsed.status;
+      if (parsedRows.length) detailRows.push(...parsedRows);
+    } catch (_e) { yearStatuses[String(year)] = "error"; }
+  }));
 
   const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
   const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
@@ -578,9 +577,7 @@ export default async function handler(req, res) {
         .filter(Boolean);
     }
 
-    const countries = [];
-
-    for (const country of requestedCountries) {
+    const countries = await Promise.all(requestedCountries.map(async (country) => {
       try {
         const current = source === "wits"
           ? await fetchWitsTradeSeries({
@@ -595,7 +592,7 @@ export default async function handler(req, res) {
             });
         const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
-        countries.push({
+        return {
           code: country.code,
           name: country.name,
           reporterCode: country.reporterCode,
@@ -624,7 +621,7 @@ export default async function handler(req, res) {
             quantityUnit: row?.qtyUnit || row?.quantityUnit || "",
             sourceType: row?.sourceType || source
           })) : []
-        });
+        };
       } catch (error) {
         console.log(source === "wits" ? "WITS error:" : "Comtrade error:", country.reporterCode || country.iso3, error.message);
         const yearStatuses = {};
@@ -633,7 +630,7 @@ export default async function handler(req, res) {
             ? "error"
             : (String(error.message || "").includes("429") ? "rate_limited" : "error");
         });
-        countries.push({
+        return {
           code: country.code,
           name: country.name,
           reporterCode: country.reporterCode,
@@ -647,9 +644,9 @@ export default async function handler(req, res) {
           year_imports: { "2021": 0, "2022": 0, "2023": 0, "2024": 0 },
           year_statuses: yearStatuses,
           products: []
-        });
+        };
       }
-    }
+    }));
 
     const okCountries = countries.filter((country) => country.status === "ok");
     const total = okCountries.reduce((sum, country) => sum + Number(country.import_usd || 0), 0);
