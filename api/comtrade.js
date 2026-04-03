@@ -226,7 +226,7 @@ async function normalizeCountryList(rawCodes) {
   return resolved;
 }
 
-function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, partnerCodes, key }) {
+function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCodes }) {
   const base = hasKey
     ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
     : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
@@ -244,48 +244,52 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, 
   if (partnerCodes && partnerCodes.length > 0) {
     // Specific partners requested — always include World(0) for totals
     paramsObj.partnerCode = ["0", ...partnerCodes].join(",");
-  } else if (!omitPartner) {
+  } else {
     paramsObj.partnerCode = "0";
   }
   return `${base}?${new URLSearchParams(paramsObj).toString()}`;
 }
 
 async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
-  const hasKey = Boolean(key);
-  // Try key as both header and query param for compatibility
-  const headers = hasKey ? { "Ocp-Apim-Subscription-Key": key } : {};
-  const maxRecords = hasKey ? 500 : 200;
-  console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${hasKey}`);
+  const maxRecords = partnerCodesFilter && partnerCodesFilter.length ? 180 : 60;
 
-  async function requestPeriods(periods) {
-    const url = buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner: hasKey, partnerCodes: partnerCodesFilter, key });
+  async function requestPeriods(periods, useKey) {
+    const headers = useKey ? { "Ocp-Apim-Subscription-Key": key } : {};
+    const url = buildUrl({ reporterCode, hs, periods, hasKey: useKey, maxRecords, partnerCodes: partnerCodesFilter });
     console.log(`[Comtrade] URL: ${url.substring(0, 150)}`);
     let response = null;
     let lastStatus = 0;
     let lastError = null;
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        response = await fetchWithTimeout(url, { headers }, 12000 + (attempt * 4000));
+        response = await fetchWithTimeout(url, { headers }, 7000 + (attempt * 2000));
         lastStatus = response.status;
         console.log(`[Comtrade] status=${response.status} attempt=${attempt}`);
         if (response.ok) {
           return await response.json();
         }
-        if (response.status !== 429 || attempt === 2) {
+        if (useKey && (response.status === 401 || response.status === 403)) {
+          const errBody = await response.text().catch(() => "");
+          throw new Error(`Comtrade ${reporterCode}: invalid_key ${errBody.substring(0,100)}`);
+        }
+        if (response.status !== 429 || attempt === 1) {
           const errBody = await response.text().catch(() => '');
           console.log(`[Comtrade] error body: ${errBody.substring(0, 200)}`);
           throw new Error(`Comtrade ${reporterCode}: ${response.status} ${errBody.substring(0,100)}`);
         }
       } catch (error) {
         lastError = error;
-        if (attempt === 2 && (!response || !response.ok)) {
+        if (String(error?.message || "").includes("invalid_key")) {
+          throw error;
+        }
+        if (attempt === 1 && (!response || !response.ok)) {
           throw error?.name === "AbortError"
             ? new Error(`Comtrade ${reporterCode}: timeout`)
             : error;
         }
       }
-      await sleep(1200 * (attempt + 1));
+      await sleep(500 * (attempt + 1));
     }
 
     throw lastError || new Error(`Comtrade ${reporterCode}: ${lastStatus || 0}`);
@@ -293,13 +297,52 @@ async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
 
   let payload = null;
   let usedPeriods = YEARS.slice();
+  const prefersKey = Boolean(key);
+  let usingKey = prefersKey;
+  console.log(`[Comtrade] reporter=${reporterCode} hs=${hs} hasKey=${usingKey}`);
   try {
-    payload = await requestPeriods(YEARS);
+    payload = await requestPeriods(YEARS, usingKey);
   } catch (error) {
+    if (usingKey && String(error?.message || "").includes("invalid_key")) {
+      usingKey = false;
+      payload = await requestPeriods(YEARS, false);
+    } else {
+      const fallbackRows = [];
+      for (const year of YEARS) {
+        try {
+          const yearPayload = await requestPeriods([year], usingKey);
+          const yearRows = Array.isArray(yearPayload?.data)
+            ? yearPayload.data
+            : Array.isArray(yearPayload?.dataset)
+              ? yearPayload.dataset
+              : [];
+          fallbackRows.push(...yearRows);
+        } catch (yearError) {
+          if (usingKey && String(yearError?.message || "").includes("invalid_key")) {
+            usingKey = false;
+            try {
+              const yearPayload = await requestPeriods([year], false);
+              const yearRows = Array.isArray(yearPayload?.data)
+                ? yearPayload.data
+                : Array.isArray(yearPayload?.dataset)
+                  ? yearPayload.dataset
+                  : [];
+              fallbackRows.push(...yearRows);
+            } catch (_) {}
+          }
+          // Keep going so we can still return partial exact totals for other years.
+        }
+      }
+      if (!fallbackRows.length) throw error;
+      payload = { data: fallbackRows };
+      usedPeriods = YEARS.slice();
+    }
+  }
+  if (!payload) {
     const fallbackRows = [];
     for (const year of YEARS) {
       try {
-        const yearPayload = await requestPeriods([year]);
+        const yearPayload = await requestPeriods([year], usingKey);
         const yearRows = Array.isArray(yearPayload?.data)
           ? yearPayload.data
           : Array.isArray(yearPayload?.dataset)
@@ -310,7 +353,7 @@ async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
         // Keep going so we can still return partial exact totals for other years.
       }
     }
-    if (!fallbackRows.length) throw error;
+    if (!fallbackRows.length) throw new Error(`Comtrade ${reporterCode}: no_data`);
     payload = { data: fallbackRows };
     usedPeriods = YEARS.slice();
   }
@@ -524,6 +567,24 @@ async function fetchWitsTradeSeries({ iso3, hs }) {
   };
 }
 
+async function mapWithConcurrency(items, limit, mapper) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+
+  async function worker() {
+    while (true) {
+      const currentIndex = nextIndex++;
+      if (currentIndex >= items.length) break;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return results;
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -552,78 +613,80 @@ export default async function handler(req, res) {
         .filter(Boolean);
     }
 
-    const countries = [];
+    const countries = await mapWithConcurrency(
+      requestedCountries,
+      source === "wits" ? 2 : 4,
+      async (country) => {
+        try {
+          const current = source === "wits"
+            ? await fetchWitsTradeSeries({
+                iso3: country.iso3,
+                hs
+              })
+            : await fetchTradeSeries({
+                reporterCode: country.reporterCode,
+                hs,
+                key,
+                partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
+              });
+          const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
-    for (const country of requestedCountries) {
-      try {
-        const current = source === "wits"
-          ? await fetchWitsTradeSeries({
-              iso3: country.iso3,
-              hs
-            })
-          : await fetchTradeSeries({
-              reporterCode: country.reporterCode,
-              hs,
-              key,
-              partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
-            });
-        const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
-
-        countries.push({
-          code: country.code,
-          name: country.name,
-          reporterCode: country.reporterCode,
-          import_usd: current.totalValue,
-          latest_import_usd: current.latestValue,
-          volume_tons: current.weightUnit === "tons"
-            ? Math.round(current.totalWeight || 0)
-            : Math.round((current.totalWeight || 0) / 1000),
-          trend_pct: null,
-          status: current.status,
-          source_used: sourceUsed,
-          year_imports: current.yearImports,
-          year_statuses: current.yearStatuses,
-          products: Array.isArray(current.rows) ? current.rows.map((row) => ({
-            hs: row?.cmdCode || hs,
-            period: row?.period || "",
-            desc: row?.cmdDesc || current.desc || "",
-            value: Number(row?.primaryValue || 0),
-            weight: Number(row?.netWgt || 0),
-            reporter: row?.reporter || country.name,
-            tradeFlow: row?.tradeFlow || "Import",
-            partnerCode: Number(row?.partnerCode ?? -1),
-            partner: row?.partnerDesc || row?.partner || row?.ptTitle || "",
-            tradeValue1000Usd: Number(row?.tradeValue1000Usd || 0),
-            quantity: Number(row?.qty || row?.netWgt || 0),
-            quantityUnit: row?.qtyUnit || row?.quantityUnit || "",
-            sourceType: row?.sourceType || source
-          })) : []
-        });
-      } catch (error) {
-        console.log(source === "wits" ? "WITS error:" : "Comtrade error:", country.reporterCode || country.iso3, error.message);
-        const yearStatuses = {};
-        YEARS.forEach((year) => {
-          yearStatuses[String(year)] = source === "wits"
-            ? "error"
-            : (String(error.message || "").includes("429") ? "rate_limited" : "error");
-        });
-        countries.push({
-          code: country.code,
-          name: country.name,
-          reporterCode: country.reporterCode,
-          import_usd: 0,
-          latest_import_usd: 0,
-          volume_tons: 0,
-          trend_pct: null,
-          status: source === "wits"
-            ? "error"
-            : (String(error.message || "").includes("429") ? "rate_limited" : "error"),
-          year_imports: { "2021": 0, "2022": 0, "2023": 0, "2024": 0 },
-          year_statuses: yearStatuses,
-          products: []
-        });
+          return {
+            code: country.code,
+            name: country.name,
+            reporterCode: country.reporterCode,
+            import_usd: current.totalValue,
+            latest_import_usd: current.latestValue,
+            volume_tons: current.weightUnit === "tons"
+              ? Math.round(current.totalWeight || 0)
+              : Math.round((current.totalWeight || 0) / 1000),
+            trend_pct: null,
+            status: current.status,
+            source_used: sourceUsed,
+            year_imports: current.yearImports,
+            year_statuses: current.yearStatuses,
+            products: Array.isArray(current.rows) ? current.rows.map((row) => ({
+              hs: row?.cmdCode || hs,
+              period: row?.period || "",
+              desc: row?.cmdDesc || current.desc || "",
+              value: Number(row?.primaryValue || 0),
+              weight: Number(row?.netWgt || 0),
+              reporter: row?.reporter || country.name,
+              tradeFlow: row?.tradeFlow || "Import",
+              partnerCode: Number(row?.partnerCode ?? -1),
+              partner: row?.partnerDesc || row?.partner || row?.ptTitle || "",
+              tradeValue1000Usd: Number(row?.tradeValue1000Usd || 0),
+              quantity: Number(row?.qty || row?.netWgt || 0),
+              quantityUnit: row?.qtyUnit || row?.quantityUnit || "",
+              sourceType: row?.sourceType || source
+            })) : []
+          };
+        } catch (error) {
+          console.log(source === "wits" ? "WITS error:" : "Comtrade error:", country.reporterCode || country.iso3, error.message);
+          const yearStatuses = {};
+          YEARS.forEach((year) => {
+            yearStatuses[String(year)] = source === "wits"
+              ? "error"
+              : (String(error.message || "").includes("429") ? "rate_limited" : "error");
+          });
+          return {
+            code: country.code,
+            name: country.name,
+            reporterCode: country.reporterCode,
+            import_usd: 0,
+            latest_import_usd: 0,
+            volume_tons: 0,
+            trend_pct: null,
+            status: source === "wits"
+              ? "error"
+              : (String(error.message || "").includes("429") ? "rate_limited" : "error"),
+            year_imports: { "2021": 0, "2022": 0, "2023": 0, "2024": 0 },
+            year_statuses: yearStatuses,
+            products: []
+          };
+        }
       }
-    }
+    );
 
     const okCountries = countries.filter((country) => country.status === "ok");
     const total = okCountries.reduce((sum, country) => sum + Number(country.import_usd || 0), 0);
