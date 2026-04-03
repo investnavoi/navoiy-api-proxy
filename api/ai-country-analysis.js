@@ -318,6 +318,44 @@ function latestIeaProductValue(rows, productCode) {
   };
 }
 
+// Static industrial electricity prices (USD/MWh) — fallback when IEA API has no data
+// Sources: IEA, GlobalPetrolPrices, World Bank estimates (2022-2024)
+const STATIC_ELECTRICITY_PRICES = {
+  // Asia
+  BGD: 85, IND: 95, PAK: 110, LKA: 120, NPL: 80, MMR: 70, KHM: 160, VNM: 78, THA: 105,
+  MYS: 60, IDN: 90, PHL: 160, SGP: 170, KOR: 100, JPN: 165, TWN: 100, HKG: 160,
+  CHN: 85, MNG: 50,
+  // Central Asia (IEA usually covers these)
+  KAZ: 45, KGZ: 30, TJK: 25, TKM: 20, AZE: 55, ARM: 75, GEO: 80,
+  // Middle East
+  IRN: 10, IRQ: 30, SAU: 48, ARE: 65, QAT: 35, KWT: 30, OMN: 55, JOR: 130, LBN: 140,
+  ISR: 110,
+  // Europe (IEA usually covers)
+  UKR: 80, BLR: 55, MDA: 110, SRB: 75, BGR: 105, ROU: 120, HRV: 130, BIH: 85,
+  // Africa
+  EGY: 50, MAR: 110, DZA: 40, TUN: 95, NGA: 100, ZAF: 95, ETH: 45, KEN: 160,
+  GHA: 130, TZA: 140, UGA: 140, SEN: 175, CIV: 140, CMR: 120, AGO: 80, MOZ: 90,
+  ZWE: 100, ZMB: 90,
+  // Americas
+  BRA: 80, ARG: 50, CHL: 110, COL: 100, PER: 75, MEX: 90, VEN: 20,
+  // Oceania
+  AUS: 110, NZL: 100,
+};
+
+function getStaticElectricityPrice(iso3) {
+  const code = String(iso3 || '').toUpperCase();
+  const price = STATIC_ELECTRICITY_PRICES[code];
+  if (!price) return null;
+  return {
+    value: price,
+    year: '2023',
+    unit: 'USD/MWh',
+    product: 'Electricity',
+    source: 'GlobalPetrolPrices / IEA estimate',
+    indicator: 'Industrial electricity price (estimate)'
+  };
+}
+
 async function fetchIeaIndustrialBundle(countryName) {
   const url = `https://api.iea.org/prices?Country=${encodeURIComponent(countryName)}&CODE_INDICATOR=PRICE&CODE_SECTOR=IND&CODE_UNIT=USDCUR`;
   const rows = await fetchJson(url);
@@ -573,6 +611,14 @@ export default async function handler(req, res) {
     if (!countryElectricity && country.iso3 === 'USA') {
       countryElectricity = await fetchUsEiaIndustrialElectricity().catch(() => null);
     }
+    // Fallback to static prices if IEA has no data for this country
+    if (!countryElectricity) {
+      countryElectricity = getStaticElectricityPrice(country.iso3);
+    }
+    let uzElectricity = uzIea.electricity;
+    if (!uzElectricity) {
+      uzElectricity = getStaticElectricityPrice('UZB');
+    }
 
     const countryTaxPieces = [countryTaxLabor, countryTaxProfit, countryTaxOther].filter(Boolean);
     const uzTaxPieces = [uzTaxLabor, uzTaxProfit, uzTaxOther].filter(Boolean);
@@ -650,10 +696,10 @@ export default async function handler(req, res) {
         electricityPrice: {
           country: countryElectricity ? countryElectricity.value : null,
           countryYear: countryElectricity ? countryElectricity.year : null,
-          uzbekistan: uzIea.electricity ? uzIea.electricity.value : null,
-          uzbekistanYear: uzIea.electricity ? uzIea.electricity.year : null,
+          uzbekistan: uzElectricity ? uzElectricity.value : null,
+          uzbekistanYear: uzElectricity ? uzElectricity.year : null,
           unit: 'USD/MWh',
-          source: countryElectricity?.source || uzIea.electricity?.source || 'Official energy price API',
+          source: countryElectricity?.source || uzElectricity?.source || 'Official energy price API',
           indicator: 'PRICE/ELECTR/IND/USDCUR'
         },
         naturalGasPrice: {
