@@ -577,7 +577,18 @@ export default async function handler(req, res) {
         .filter(Boolean);
     }
 
-    const countries = await Promise.all(requestedCountries.map(async (country) => {
+    // Concurrency-limited fetch: 3 countries at a time to avoid Comtrade 403 rate limiting
+    async function fetchWithConcurrency(items, concurrency, fn) {
+      const results = [];
+      for (let i = 0; i < items.length; i += concurrency) {
+        const batch = items.slice(i, i + concurrency);
+        const batchResults = await Promise.all(batch.map(fn));
+        results.push(...batchResults);
+      }
+      return results;
+    }
+
+    const countries = await fetchWithConcurrency(requestedCountries, 3, async (country) => {
       try {
         const current = source === "wits"
           ? await fetchWitsTradeSeries({
