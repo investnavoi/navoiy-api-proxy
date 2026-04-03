@@ -730,9 +730,15 @@ export default async function handler(req, res) {
         .filter(Boolean);
     }
 
+    const shouldUseComtradeBatch =
+      source !== "wits" &&
+      requestedCountries.length > 0 &&
+      requestedCountries.length <= 3 &&
+      (!partnerCodesFilter.length || partnerCodesFilter.length <= 8);
+
     let comtradeBatchByReporter = null;
     let comtradeBatchError = null;
-    if (source !== "wits") {
+    if (shouldUseComtradeBatch) {
       try {
         comtradeBatchByReporter = await fetchTradeSeriesBatch({
           reporterCodes: requestedCountries.map((country) => country.reporterCode),
@@ -746,9 +752,13 @@ export default async function handler(req, res) {
       }
     }
 
+    const comtradeConcurrency = source === "wits"
+      ? 2
+      : (requestedCountries.length >= 20 ? 4 : (requestedCountries.length >= 8 ? 3 : 2));
+
     const countries = await mapWithConcurrency(
       requestedCountries,
-      source === "wits" ? 2 : 1,
+      comtradeConcurrency,
       async (country) => {
         try {
           const reporterKey = String(country.reporterCode || "").padStart(3, "0");
