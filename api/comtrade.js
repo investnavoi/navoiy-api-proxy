@@ -263,28 +263,32 @@ async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
     let lastStatus = 0;
     let lastError = null;
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        response = await fetchWithTimeout(url, { headers }, 12000 + (attempt * 4000));
+        response = await fetchWithTimeout(url, { headers }, 10000);
         lastStatus = response.status;
         console.log(`[Comtrade] status=${response.status} attempt=${attempt}`);
         if (response.ok) {
           return await response.json();
         }
-        if (response.status !== 429 || attempt === 2) {
+        // On rate limit — throw so outer handler marks it as rate_limited
+        if (response.status === 429) {
+          console.log(`[Comtrade] rate limited for ${reporterCode}`);
+          throw new Error(`Comtrade ${reporterCode}: 429 rate limited`);
+        }
+        if (attempt === 1) {
           const errBody = await response.text().catch(() => '');
-          console.log(`[Comtrade] error body: ${errBody.substring(0, 200)}`);
           throw new Error(`Comtrade ${reporterCode}: ${response.status} ${errBody.substring(0,100)}`);
         }
       } catch (error) {
         lastError = error;
-        if (attempt === 2 && (!response || !response.ok)) {
+        if (attempt === 1) {
           throw error?.name === "AbortError"
             ? new Error(`Comtrade ${reporterCode}: timeout`)
             : error;
         }
       }
-      await sleep(1200 * (attempt + 1));
+      await sleep(800);
     }
 
     throw lastError || new Error(`Comtrade ${reporterCode}: ${lastStatus || 0}`);
@@ -533,9 +537,11 @@ export default async function handler(req, res) {
     const key = String(
       process.env.COMTRADE_API_KEY ||
       process.env.COMTRADE_PRIMARY_KEY ||
+      process.env.COMTRADE_KEY ||
       req.query.key ||
       ""
     ).trim();
+    console.log(`[Comtrade] hasKey=${Boolean(key)}, keyLen=${key.length}`);
     const requestedCountries = await normalizeCountryList(req.query.countries);
 
     // Resolve source countries to Comtrade partner codes
@@ -549,22 +555,49 @@ export default async function handler(req, res) {
         .filter(Boolean);
     }
 
-    const countries = [];
+    // Fetch all countries IN PARALLEL for speed
+    const results = await Promise.all(
+      requestedCountries.map(async (country) => {
+        try {
+          const current = source === "wits"
+            ? await fetchWitsTradeSeries({ iso3: country.iso3, hs })
+            : await fetchTradeSeries({
+                reporterCode: country.reporterCode,
+                hs,
+                key,
+                partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
+              });
+          return { country, current, ok: true };
+        } catch(e) {
+          return { country, current: null, ok: false, error: e.message };
+        }
+      })
+    );
 
-    for (const country of requestedCountries) {
+    const countries = [];
+    for (const { country, current, ok } of results) {
+      if (!ok || !current) {
+        countries.push({
+          code: country.code,
+          name: country.name,
+          reporterCode: country.reporterCode,
+          import_usd: 0,
+          latest_import_usd: 0,
+          volume_tons: 0,
+          trend_pct: null,
+          status: "error",
+          source_used: "UN Comtrade",
+          year_imports: {},
+          year_statuses: {},
+          products: []
+        });
+        continue;
+      }
       try {
-        const current = source === "wits"
-          ? await fetchWitsTradeSeries({
-              iso3: country.iso3,
-              hs
-            })
-          : await fetchTradeSeries({
-              reporterCode: country.reporterCode,
-              hs,
-              key,
-              partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
-            });
+        const current2 = current;
         const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
+        // reuse same variable name below
+        const currentAlias = current2;
 
         countries.push({
           code: country.code,
