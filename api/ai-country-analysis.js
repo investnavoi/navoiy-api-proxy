@@ -482,8 +482,14 @@ function matchTariffInfo(rows, hsCode) {
 async function fetchTariffPair(reporterIso, partnerIso, hsCode, requestedYear) {
   const candidateYears = [requestedYear, requestedYear - 1, requestedYear - 2, requestedYear - 3]
     .filter((v, idx, arr) => v > 0 && arr.indexOf(v) === idx);
-  for (const year of candidateYears) {
-    const rows = await fetchTariffSet(reporterIso, partnerIso, year);
+  const results = await Promise.all(
+    candidateYears.map((year) =>
+      fetchTariffSet(reporterIso, partnerIso, year)
+        .then((rows) => ({ year, rows }))
+        .catch(() => ({ year, rows: [] }))
+    )
+  );
+  for (const { year, rows } of results) {
     const info = matchTariffInfo(rows, hsCode);
     if (info) return { ...info, year: String(year) };
   }

@@ -96,15 +96,16 @@ export default async function handler(req, res) {
     const requestedYear = Number(year) || 2024;
     const candidateYears = [requestedYear, requestedYear - 1, requestedYear - 2, requestedYear - 3]
       .filter((v, idx, arr) => v > 0 && arr.indexOf(v) === idx);
-    let usedYear = requestedYear;
-    let rows = [];
-    for (const y of candidateYears) {
-      rows = await fetchTariffSet(reporterIso, partnerIso, y);
-      if (rows.length) {
-        usedYear = y;
-        break;
-      }
-    }
+    const yearResults = await Promise.all(
+      candidateYears.map((y) =>
+        fetchTariffSet(reporterIso, partnerIso, y)
+          .then((r) => ({ year: y, rows: r }))
+          .catch(() => ({ year: y, rows: [] }))
+      )
+    );
+    const found = yearResults.find((r) => r.rows.length) || { year: requestedYear, rows: [] };
+    let usedYear = found.year;
+    let rows = found.rows;
 
     res.json({
       data: rows,
