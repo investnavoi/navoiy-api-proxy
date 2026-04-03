@@ -577,18 +577,8 @@ export default async function handler(req, res) {
         .filter(Boolean);
     }
 
-    // Concurrency-limited fetch: 3 countries at a time to avoid Comtrade 403 rate limiting
-    async function fetchWithConcurrency(items, concurrency, fn) {
-      const results = [];
-      for (let i = 0; i < items.length; i += concurrency) {
-        const batch = items.slice(i, i + concurrency);
-        const batchResults = await Promise.all(batch.map(fn));
-        results.push(...batchResults);
-      }
-      return results;
-    }
-
-    const countries = await fetchWithConcurrency(requestedCountries, 3, async (country) => {
+    const countries = [];
+    for (const country of requestedCountries) {
       try {
         const current = source === "wits"
           ? await fetchWitsTradeSeries({
@@ -603,7 +593,7 @@ export default async function handler(req, res) {
             });
         const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
-        return {
+        countries.push({
           code: country.code,
           name: country.name,
           reporterCode: country.reporterCode,
@@ -632,7 +622,7 @@ export default async function handler(req, res) {
             quantityUnit: row?.qtyUnit || row?.quantityUnit || "",
             sourceType: row?.sourceType || source
           })) : []
-        };
+        });
       } catch (error) {
         console.log(source === "wits" ? "WITS error:" : "Comtrade error:", country.reporterCode || country.iso3, error.message);
         const yearStatuses = {};
@@ -641,7 +631,7 @@ export default async function handler(req, res) {
             ? "error"
             : (String(error.message || "").includes("429") ? "rate_limited" : "error");
         });
-        return {
+        countries.push({
           code: country.code,
           name: country.name,
           reporterCode: country.reporterCode,
@@ -655,9 +645,9 @@ export default async function handler(req, res) {
           year_imports: { "2021": 0, "2022": 0, "2023": 0, "2024": 0 },
           year_statuses: yearStatuses,
           products: []
-        };
+        });
       }
-    }));
+    }
 
     const okCountries = countries.filter((country) => country.status === "ok");
     const total = okCountries.reduce((sum, country) => sum + Number(country.import_usd || 0), 0);
