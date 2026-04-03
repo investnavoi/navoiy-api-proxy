@@ -242,10 +242,7 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCodes 
     includeDesc: "true"
   };
   if (partnerCodes && partnerCodes.length > 0) {
-    // Specific partners requested — always include World(0) for totals
     paramsObj.partnerCode = ["0", ...partnerCodes].join(",");
-  } else {
-    paramsObj.partnerCode = "0";
   }
   return `${base}?${new URLSearchParams(paramsObj).toString()}`;
 }
@@ -312,7 +309,7 @@ function buildTradeResultFromRows({ rows, partnerCodesFilter }) {
 }
 
 async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
-  const maxRecords = partnerCodesFilter && partnerCodesFilter.length ? 180 : 60;
+  const maxRecords = partnerCodesFilter && partnerCodesFilter.length ? 180 : 2500;
 
   async function requestPeriods(periods, useKey) {
     const headers = useKey ? { "Ocp-Apim-Subscription-Key": key } : {};
@@ -434,8 +431,10 @@ async function fetchTradeSeriesBatch({ reporterCodes, hs, key, partnerCodesFilte
     .filter(Boolean);
   if (!reporterCodeList.length) return {};
 
-  const estimatedRows = reporterCodeList.length * YEARS.length * (partnerCodesFilter && partnerCodesFilter.length ? (partnerCodesFilter.length + 1) : 1);
-  const maxRecords = Math.min(2500, Math.max(120, estimatedRows * 3));
+  const estimatedRows = reporterCodeList.length * YEARS.length * (partnerCodesFilter && partnerCodesFilter.length ? (partnerCodesFilter.length + 1) : 25);
+  const maxRecords = partnerCodesFilter && partnerCodesFilter.length
+    ? Math.min(2500, Math.max(180, estimatedRows * 3))
+    : 2500;
 
   async function requestPeriods(periods, useKey) {
     const headers = useKey ? { "Ocp-Apim-Subscription-Key": key } : {};
@@ -750,20 +749,26 @@ export default async function handler(req, res) {
       source === "wits" ? 2 : 1,
       async (country) => {
         try {
+          const reporterKey = String(country.reporterCode || "").padStart(3, "0");
+          const batchCurrent = comtradeBatchByReporter ? comtradeBatchByReporter[reporterKey] : null;
+          const canUseBatch = !!(batchCurrent && (
+            batchCurrent.status === "no_data" ||
+            (Array.isArray(batchCurrent.rows) && batchCurrent.rows.length > 0) ||
+            YEARS.some((year) => Number((batchCurrent.yearImports || {})[String(year)] || 0) > 0)
+          ));
           const current = source === "wits"
             ? await fetchWitsTradeSeries({
                 iso3: country.iso3,
                 hs
               })
-            : (comtradeBatchByReporter && comtradeBatchByReporter[String(country.reporterCode || "").padStart(3, "0")])
-              || (comtradeBatchError
-                ? (() => { throw comtradeBatchError; })()
-                : await fetchTradeSeries({
-                    reporterCode: country.reporterCode,
-                    hs,
-                    key,
-                    partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
-                  }));
+            : (canUseBatch
+              ? batchCurrent
+              : await fetchTradeSeries({
+                  reporterCode: country.reporterCode,
+                  hs,
+                  key,
+                  partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
+                }));
           const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
           return {
