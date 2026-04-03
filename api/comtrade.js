@@ -529,7 +529,33 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    const hs = String(req.query.hs || "2516").replace(/\D/g, "").slice(0, 6) || "2516";
+    // --- BULK MODE: hs=2518,2521,2522 (vergul bo'lsa parallel fetch) ---
+    const rawHsParam = String(req.query.hs || "");
+    if (rawHsParam.includes(",")) {
+      const hsCodes = [...new Set(rawHsParam.split(",").map((s) => s.trim().replace(/\D/g, "").slice(0, 6)).filter(Boolean))];
+      const year     = String(req.query.year     || "2023");
+      const countries= String(req.query.countries|| "");
+      const source   = String(req.query.source   || "comtrade");
+      const key      = String(process.env.COMTRADE_API_KEY || process.env.COMTRADE_PRIMARY_KEY || process.env.COMTRADE_KEY || req.query.key || "").trim();
+      const BASE     = "https://navoiy-api-proxy.vercel.app";
+      const entries  = await Promise.all(
+        hsCodes.map(async (hs) => {
+          try {
+            let url = `${BASE}/api/comtrade?hs=${encodeURIComponent(hs)}&year=${encodeURIComponent(year)}&countries=${encodeURIComponent(countries)}&source=${encodeURIComponent(source)}`;
+            if (key) url += `&key=${encodeURIComponent(key)}`;
+            const resp = await fetch(url, { signal: AbortSignal.timeout(25000) });
+            if (!resp.ok) return [hs, { countries: [], error: resp.status }];
+            const data = await resp.json();
+            return [hs, { countries: data.countries || [], source: data.source || "UN Comtrade" }];
+          } catch (e) {
+            return [hs, { countries: [], error: e.message }];
+          }
+        })
+      );
+      return res.json({ results: Object.fromEntries(entries), fetchedCount: hsCodes.length, year });
+    }
+
+    const hs = rawHsParam.replace(/\D/g, "").slice(0, 6) || "2516";
     const source = String(req.query.source || "comtrade").trim().toLowerCase();
     const key = String(
       process.env.COMTRADE_API_KEY ||
