@@ -89,27 +89,20 @@ function parseCsv(text) {
 }
 
 function latestIloUsdValue(rows) {
-  const preferredLabels = [
-    "Currency: U.S. dollars",
-    "Currency: 2021 PPP $",
-    "Currency: Local currency"
-  ];
-  for (const label of preferredLabels) {
-    const matches = rows
-      .filter((row) => String(row["classif1.label"] || "").trim() === label)
-      .filter((row) => row.obs_value !== undefined && row.obs_value !== null && String(row.obs_value).trim() !== "")
-      .sort((a, b) => Number(b.time || 0) - Number(a.time || 0));
-    if (matches.length) {
-      const row = matches[0];
-      return {
-        value: Number(row.obs_value),
-        year: String(row.time || ""),
-        currencyLabel: label,
-        sourceLabel: row["source.label"] || "",
-        noteIndicator: row["note_indicator.label"] || "",
-        noteSource: row["note_source.label"] || ""
-      };
-    }
+  const matches = rows
+    .filter((row) => String(row["classif1.label"] || "").trim() === "Currency: U.S. dollars")
+    .filter((row) => row.obs_value !== undefined && row.obs_value !== null && String(row.obs_value).trim() !== "")
+    .sort((a, b) => Number(b.time || 0) - Number(a.time || 0));
+  if (matches.length) {
+    const row = matches[0];
+    return {
+      value: Number(row.obs_value),
+      year: String(row.time || ""),
+      currencyLabel: "Currency: U.S. dollars",
+      sourceLabel: row["source.label"] || "",
+      noteIndicator: row["note_indicator.label"] || "",
+      noteSource: row["note_source.label"] || ""
+    };
   }
   return null;
 }
@@ -127,12 +120,7 @@ async function fetchIlostatMonthlyWage(iso3) {
     ...value,
     source: "ILOSTAT API",
     indicator: "EAR_EMTA_SEX_CUR_NB_A",
-    unit:
-      value.currencyLabel === "Currency: U.S. dollars"
-        ? "USD/month"
-        : value.currencyLabel === "Currency: 2021 PPP $"
-          ? "PPP$/month"
-          : "Local currency/month"
+    unit: "USD/month"
   };
 }
 
