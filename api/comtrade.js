@@ -227,8 +227,9 @@ async function normalizeCountryList(rawCodes) {
 }
 
 function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, partnerCodes, key }) {
-  // Always use public preview endpoint — key passed as subscription-key param
-  const base = "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
+  const base = hasKey
+    ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
+    : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
   const paramsObj = {
     reporterCode,
     period: periods.join(","),
@@ -246,7 +247,6 @@ function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, omitPartner, 
   } else if (!omitPartner) {
     paramsObj.partnerCode = "0";
   }
-  if (key) paramsObj['subscription-key'] = key;
   return `${base}?${new URLSearchParams(paramsObj).toString()}`;
 }
 
@@ -488,23 +488,24 @@ async function fetchWitsTradeSeries({ iso3, hs }) {
   const yearStatuses = {};
   const detailRows = [];
 
-  await Promise.all(YEARS.map(async (year) => {
+  for (const year of YEARS) {
     yearImports[String(year)] = 0;
     yearWeights[String(year)] = 0;
     yearStatuses[String(year)] = "no_data";
     const url = `https://wits.worldbank.org/trade/comtrade/en/country/${String(iso3).toUpperCase()}/year/${year}/tradeflow/Imports/partner/ALL/product/${encodeURIComponent(hs)}`;
-    try {
-      const response = await fetchWithTimeout(url, { headers: WITS_HEADERS }, 18000);
-      if (!response.ok) { yearStatuses[String(year)] = "error"; return; }
-      const html = await response.text();
-      const parsed = parseWitsSummary(html);
-      const parsedRows = parseWitsDetailRows(html);
-      yearImports[String(year)] = parsed.importUsd;
-      yearWeights[String(year)] = parsed.quantityTons;
-      yearStatuses[String(year)] = parsed.status;
-      if (parsedRows.length) detailRows.push(...parsedRows);
-    } catch (_e) { yearStatuses[String(year)] = "error"; }
-  }));
+    const response = await fetchWithTimeout(url, { headers: WITS_HEADERS }, 18000);
+    if (!response.ok) {
+      yearStatuses[String(year)] = "error";
+      continue;
+    }
+    const html = await response.text();
+    const parsed = parseWitsSummary(html);
+    const parsedRows = parseWitsDetailRows(html);
+    yearImports[String(year)] = parsed.importUsd;
+    yearWeights[String(year)] = parsed.quantityTons;
+    yearStatuses[String(year)] = parsed.status;
+    if (parsedRows.length) detailRows.push(...parsedRows);
+  }
 
   const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
   const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
@@ -528,33 +529,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    // --- BULK MODE: hs=2518,2521,2522 (vergul bo'lsa parallel fetch) ---
-    const rawHsParam = String(req.query.hs || "");
-    if (rawHsParam.includes(",")) {
-      const hsCodes = [...new Set(rawHsParam.split(",").map((s) => s.trim().replace(/\D/g, "").slice(0, 6)).filter(Boolean))];
-      const year     = String(req.query.year     || "2023");
-      const countries= String(req.query.countries|| "");
-      const source   = String(req.query.source   || "comtrade");
-      const key      = String(process.env.COMTRADE_API_KEY || process.env.COMTRADE_PRIMARY_KEY || process.env.COMTRADE_KEY || req.query.key || "").trim();
-      const BASE     = "https://navoiy-api-proxy.vercel.app";
-      const entries  = await Promise.all(
-        hsCodes.map(async (hs) => {
-          try {
-            let url = `${BASE}/api/comtrade?hs=${encodeURIComponent(hs)}&year=${encodeURIComponent(year)}&countries=${encodeURIComponent(countries)}&source=${encodeURIComponent(source)}`;
-            if (key) url += `&key=${encodeURIComponent(key)}`;
-            const resp = await fetch(url, { signal: AbortSignal.timeout(25000) });
-            if (!resp.ok) return [hs, { countries: [], error: resp.status }];
-            const data = await resp.json();
-            return [hs, { countries: data.countries || [], source: data.source || "UN Comtrade" }];
-          } catch (e) {
-            return [hs, { countries: [], error: e.message }];
-          }
-        })
-      );
-      return res.json({ results: Object.fromEntries(entries), fetchedCount: hsCodes.length, year });
-    }
-
-    const hs = rawHsParam.replace(/\D/g, "").slice(0, 6) || "2516";
+    const hs = String(req.query.hs || "2516").replace(/\D/g, "").slice(0, 6) || "2516";
     const source = String(req.query.source || "comtrade").trim().toLowerCase();
     const key = String(
       process.env.COMTRADE_API_KEY ||
@@ -578,6 +553,7 @@ export default async function handler(req, res) {
     }
 
     const countries = [];
+
     for (const country of requestedCountries) {
       try {
         const current = source === "wits"
