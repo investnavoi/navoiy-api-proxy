@@ -267,10 +267,12 @@ function buildTradeResultFromRows({ rows, partnerCodesFilter }) {
   const filteredPartnerRows = requestedCodes
     ? allFiltered.filter((row) => requestedCodes.includes(String(row?.partnerCode ?? "")))
     : null;
-  const totalRows = filteredPartnerRows
-    ? (filteredPartnerRows.length ? filteredPartnerRows : allFiltered.filter(r => requestedCodes.includes(String(r?.partnerCode ?? ""))))
+  const totalRows = requestedCodes
+    ? filteredPartnerRows
     : (worldRows.length ? worldRows : allFiltered);
-  const sourceRows = allFiltered.length ? allFiltered : safeRows;
+  const sourceRows = requestedCodes
+    ? filteredPartnerRows
+    : (allFiltered.length ? allFiltered : safeRows);
 
   const yearImports = {};
   const yearWeights = {};
@@ -293,7 +295,7 @@ function buildTradeResultFromRows({ rows, partnerCodesFilter }) {
 
   const totalValue = YEARS.reduce((sum, year) => sum + Number(yearImports[String(year)] || 0), 0);
   const totalWeight = YEARS.reduce((sum, year) => sum + Number(yearWeights[String(year)] || 0), 0);
-  const firstDesc = sourceRows.find((row) => row?.cmdDesc)?.cmdDesc || "";
+  const firstDesc = (sourceRows.find((row) => row?.cmdDesc) || allFiltered.find((row) => row?.cmdDesc) || {})?.cmdDesc || "";
 
   return {
     rows: sourceRows,
@@ -304,7 +306,7 @@ function buildTradeResultFromRows({ rows, partnerCodesFilter }) {
     yearImports,
     yearStatuses,
     weightUnit: "kg",
-    status: sourceRows.length > 0 ? "ok" : "no_data"
+    status: totalRows.length > 0 ? "ok" : "no_data"
   };
 }
 
