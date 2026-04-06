@@ -86,7 +86,7 @@ async function fetchSavedMessagesViaDialogs(client, me){
     for(const dialog of candidates){
       if(!dialog?.entity) continue;
       try {
-        const messages = await client.getMessages(dialog.entity, {limit:30});
+        const messages = await client.getMessages(dialog.entity, {limit:50});
         if(Array.isArray(messages) && messages.length) return messages;
         try { return Array.from(messages || []); } catch(_e){}
       } catch(_dialogMessagesError){}
@@ -170,26 +170,26 @@ async function fetchMessagesForUser(client, user, isSelf, me){
   let messages = [];
   if(isSelf){
     try {
-      messages = await client.getMessages('me', {limit:20});
+      messages = await client.getMessages('me', {limit:50});
     } catch(_selfError){}
     if(Array.isArray(messages) && messages.length) return messages;
     try {
       const selfEntity = await client.getEntity('me');
-      messages = await client.getMessages(selfEntity, {limit:20});
+      messages = await client.getMessages(selfEntity, {limit:50});
     } catch(_selfEntityError){}
     if(Array.isArray(messages) && messages.length) return messages;
     messages = await fetchSavedMessagesViaDialogs(client, me || user);
     if(Array.isArray(messages) && messages.length) return messages;
   }
   try {
-    messages = await client.getMessages(user, {limit:12});
+    messages = await client.getMessages(user, {limit:50});
   } catch(_firstError){
     try {
-      messages = await client.getMessages(user.id, {limit:12});
+      messages = await client.getMessages(user.id, {limit:50});
     } catch(_secondError){
       try {
         const entity = await client.getEntity(user.id);
-        messages = await client.getMessages(entity, {limit:12});
+        messages = await client.getMessages(entity, {limit:50});
       } catch(_thirdError){
         messages = [];
       }
@@ -257,7 +257,7 @@ async function handleReplies(req, res, body){
         .filter((message)=>{
           if(selfTarget) return true;
           const messageTs = getMessageTs(message);
-          return !sinceBufferTs || (messageTs && messageTs > sinceBufferTs);
+          return true; // check all recent messages regardless of time
         })
         .sort((a,b)=>{
           return getMessageTs(b) - getMessageTs(a);
@@ -269,7 +269,12 @@ async function handleReplies(req, res, body){
             if(!sentMessageNormalized) return true;
             return text && text !== sentMessageNormalized;
           })
-        : recentMessages.filter((message)=>message.out !== true);
+        : recentMessages.filter((message)=>{
+            // message.out===true means WE sent it; false/undefined means incoming
+            if(message.out === true) return false;
+            // Also filter by peerId match — must be from this user
+            return true;
+          });
 
       let latest = inbound[0] || null;
       if(!latest && selfTarget && recentMessages.length >= 2){
