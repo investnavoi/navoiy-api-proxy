@@ -226,14 +226,14 @@ async function normalizeCountryList(rawCodes) {
   return resolved;
 }
 
-function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCodes }) {
+function buildUrl({ reporterCode, hs, periods, hasKey, maxRecords, partnerCodes, flowCode }) {
   const base = hasKey
     ? "https://comtradeapi.un.org/data/v1/get/C/A/HS"
     : "https://comtradeapi.un.org/public/v1/preview/C/A/HS";
   const paramsObj = {
     reporterCode,
     period: periods.join(","),
-    flowCode: "M",
+    flowCode: flowCode || "M",
     partner2Code: "0",
     customsCode: "C00",
     motCode: "0",
@@ -310,12 +310,12 @@ function buildTradeResultFromRows({ rows, partnerCodesFilter }) {
   };
 }
 
-async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
+async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter, flowCode }) {
   const maxRecords = partnerCodesFilter && partnerCodesFilter.length ? 180 : 2500;
 
   async function requestPeriods(periods, useKey) {
     const headers = useKey ? { "Ocp-Apim-Subscription-Key": key } : {};
-    const url = buildUrl({ reporterCode, hs, periods, hasKey: useKey, maxRecords, partnerCodes: partnerCodesFilter });
+    const url = buildUrl({ reporterCode, hs, periods, hasKey: useKey, maxRecords, partnerCodes: partnerCodesFilter, flowCode });
     console.log(`[Comtrade] URL: ${url.substring(0, 150)}`);
     let response = null;
     let lastStatus = 0;
@@ -427,7 +427,7 @@ async function fetchTradeSeries({ reporterCode, hs, key, partnerCodesFilter }) {
   return buildTradeResultFromRows({ rows, partnerCodesFilter });
 }
 
-async function fetchTradeSeriesBatch({ reporterCodes, hs, key, partnerCodesFilter }) {
+async function fetchTradeSeriesBatch({ reporterCodes, hs, key, partnerCodesFilter, flowCode }) {
   const reporterCodeList = (Array.isArray(reporterCodes) ? reporterCodes : [reporterCodes])
     .map((code) => String(code || "").trim())
     .filter(Boolean);
@@ -446,7 +446,8 @@ async function fetchTradeSeriesBatch({ reporterCodes, hs, key, partnerCodesFilte
       periods,
       hasKey: useKey,
       maxRecords,
-      partnerCodes: partnerCodesFilter
+      partnerCodes: partnerCodesFilter,
+      flowCode
     });
     console.log(`[Comtrade-batch] URL: ${url.substring(0, 180)}`);
     let response = null;
@@ -552,7 +553,7 @@ async function fetchTradeSeriesBatch({ reporterCodes, hs, key, partnerCodesFilte
   return results;
 }
 
-async function fetchTradeSeriesBatchChunked({ reporterCodes, hs, key, partnerCodesFilter }) {
+async function fetchTradeSeriesBatchChunked({ reporterCodes, hs, key, partnerCodesFilter, flowCode }) {
   const reporterCodeList = (Array.isArray(reporterCodes) ? reporterCodes : [reporterCodes])
     .map((code) => String(code || "").trim())
     .filter(Boolean);
@@ -570,7 +571,8 @@ async function fetchTradeSeriesBatchChunked({ reporterCodes, hs, key, partnerCod
         reporterCodes: chunk,
         hs,
         key,
-        partnerCodesFilter
+        partnerCodesFilter,
+        flowCode
       });
       Object.assign(combined, partial || {});
     } catch (error) {
@@ -672,7 +674,7 @@ function parseWitsDetailRows(html) {
   return rows;
 }
 
-async function fetchWitsTradeSeries({ iso3, hs }) {
+async function fetchWitsTradeSeries({ iso3, hs, flowCode }) {
   if (!iso3) throw new Error("WITS reporter missing");
   const yearImports = {};
   const yearWeights = {};
@@ -683,7 +685,8 @@ async function fetchWitsTradeSeries({ iso3, hs }) {
     yearImports[String(year)] = 0;
     yearWeights[String(year)] = 0;
     yearStatuses[String(year)] = "no_data";
-    const url = `https://wits.worldbank.org/trade/comtrade/en/country/${String(iso3).toUpperCase()}/year/${year}/tradeflow/Imports/partner/ALL/product/${encodeURIComponent(hs)}`;
+    const tradeFlowPath = String(flowCode || "M").toUpperCase() === "X" ? "Exports" : "Imports";
+    const url = `https://wits.worldbank.org/trade/comtrade/en/country/${String(iso3).toUpperCase()}/year/${year}/tradeflow/${tradeFlowPath}/partner/ALL/product/${encodeURIComponent(hs)}`;
     const response = await fetchWithTimeout(url, { headers: WITS_HEADERS }, 18000);
     if (!response.ok) {
       yearStatuses[String(year)] = "error";
@@ -740,6 +743,7 @@ export default async function handler(req, res) {
   try {
     const hs = String(req.query.hs || "2516").replace(/\D/g, "").slice(0, 6) || "2516";
     const source = String(req.query.source || "comtrade").trim().toLowerCase();
+    const flowCode = String(req.query.flow || "M").trim().toUpperCase() === "X" ? "X" : "M";
     const key = String(
       process.env.COMTRADE_API_KEY ||
       process.env.COMTRADE_PRIMARY_KEY ||
@@ -773,7 +777,8 @@ export default async function handler(req, res) {
           reporterCodes: requestedCountries.map((country) => country.reporterCode),
           hs,
           key,
-          partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
+          partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null,
+          flowCode
         });
         if (!Object.keys(comtradeBatchByReporter || {}).length) {
           comtradeBatchByReporter = null;
@@ -803,7 +808,8 @@ export default async function handler(req, res) {
           const current = source === "wits"
             ? await fetchWitsTradeSeries({
                 iso3: country.iso3,
-                hs
+                hs,
+                flowCode
               })
             : (canUseBatch
               ? batchCurrent
@@ -811,7 +817,8 @@ export default async function handler(req, res) {
                   reporterCode: country.reporterCode,
                   hs,
                   key,
-                  partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
+                  partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null,
+                  flowCode
                 }));
           const sourceUsed = source === "wits" ? "WITS (World Bank)" : "UN Comtrade";
 
@@ -836,7 +843,7 @@ export default async function handler(req, res) {
               value: Number(row?.primaryValue || 0),
               weight: Number(row?.netWgt || row?.qty || 0),
               reporter: row?.reporterDesc || row?.reporter || country.name,
-              tradeFlow: row?.flowDesc || row?.tradeFlow || "Import",
+              tradeFlow: row?.flowDesc || row?.tradeFlow || (flowCode === "X" ? "Export" : "Import"),
               partnerCode: Number(row?.partnerCode ?? -1),
               partner: row?.partnerDesc || row?.partner || row?.ptTitle || "",
               tradeValue1000Usd: Number(row?.tradeValue1000Usd || 0),
