@@ -100,6 +100,55 @@ function latestIloUsdValue(rows) {
   return null;
 }
 
+let worldBankCountryCatalogPromise = null;
+
+async function fetchWorldBankCountryCatalog() {
+  if (worldBankCountryCatalogPromise) return worldBankCountryCatalogPromise;
+  worldBankCountryCatalogPromise = (async () => {
+    const [countryResponse, indicatorResponse] = await Promise.all([
+      fetchText("https://api.worldbank.org/v2/country?format=json&per_page=400"),
+      fetchText("https://api.worldbank.org/v2/country/all/indicator/SP.POP.TOTL?format=json&date=2020:2024&per_page=5000")
+    ]);
+
+    if (countryResponse.statusCode < 200 || countryResponse.statusCode >= 300) {
+      throw new Error(`World Bank countries ${countryResponse.statusCode}`);
+    }
+
+    const countriesJson = JSON.parse(countryResponse.body);
+    const indicatorJson = indicatorResponse.statusCode >= 200 && indicatorResponse.statusCode < 300
+      ? JSON.parse(indicatorResponse.body)
+      : [null, []];
+
+    const iso3ByIso2 = {};
+    if (Array.isArray(indicatorJson[1])) {
+      indicatorJson[1].forEach((row) => {
+        const iso2 = String(row?.country?.id || "").trim().toUpperCase();
+        const iso3 = String(row?.countryiso3code || "").trim().toUpperCase();
+        if (iso2 && iso3 && iso3 !== "NA") {
+          iso3ByIso2[iso2] = iso3;
+        }
+      });
+    }
+
+    const rows = Array.isArray(countriesJson[1]) ? countriesJson[1] : [];
+    return rows
+      .filter((row) => row && row.id && row.name)
+      .filter((row) => String(row?.region?.value || "").trim().toLowerCase() !== "aggregates")
+      .map((row) => {
+        const iso2 = String(row.id || "").trim().toUpperCase();
+        return {
+          iso2,
+          iso3: iso3ByIso2[iso2] || "",
+          name: String(row.name || "").trim()
+        };
+      });
+  })().catch((error) => {
+    worldBankCountryCatalogPromise = null;
+    throw error;
+  });
+  return worldBankCountryCatalogPromise;
+}
+
 async function fetchWorldBankIndicatorForCountry(iso3, indicator, format, date, perPage) {
   const url =
     "https://api.worldbank.org/v2/country/" +
@@ -176,7 +225,16 @@ export default async function handler(req, res) {
   try {
     const query = req.query || {};
     const source = String(query.source || "").trim().toLowerCase();
+    const meta = String(query.meta || "").trim().toLowerCase();
     const country = String(query.country || "UZB").trim() || "UZB";
+    if (meta === "countries" || source === "country-meta") {
+      const countries = await fetchWorldBankCountryCatalog();
+      sendJson(res, {
+        source: "World Bank Countries",
+        countries
+      });
+      return;
+    }
     if (source === "ilostat-wage") {
       const countries = country
         .split(";")
