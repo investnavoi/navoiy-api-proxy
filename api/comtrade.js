@@ -552,6 +552,37 @@ async function fetchTradeSeriesBatch({ reporterCodes, hs, key, partnerCodesFilte
   return results;
 }
 
+async function fetchTradeSeriesBatchChunked({ reporterCodes, hs, key, partnerCodesFilter }) {
+  const reporterCodeList = (Array.isArray(reporterCodes) ? reporterCodes : [reporterCodes])
+    .map((code) => String(code || "").trim())
+    .filter(Boolean);
+  if (!reporterCodeList.length) return {};
+
+  const chunkSize = partnerCodesFilter && partnerCodesFilter.length
+    ? (partnerCodesFilter.length <= 8 ? 6 : 3)
+    : 12;
+
+  const combined = {};
+  for (let i = 0; i < reporterCodeList.length; i += chunkSize) {
+    const chunk = reporterCodeList.slice(i, i + chunkSize);
+    try {
+      const partial = await fetchTradeSeriesBatch({
+        reporterCodes: chunk,
+        hs,
+        key,
+        partnerCodesFilter
+      });
+      Object.assign(combined, partial || {});
+    } catch (error) {
+      console.log(`[Comtrade-batch-chunk] reporters=${chunk.join(",")} error=${error.message}`);
+    }
+    if (i + chunkSize < reporterCodeList.length) {
+      await sleep(400);
+    }
+  }
+  return combined;
+}
+
 function normalizeWitsHtml(html) {
   return String(html || "")
     .replace(/[\r\n\t]+/g, " ")
@@ -732,20 +763,21 @@ export default async function handler(req, res) {
 
     const shouldUseComtradeBatch =
       source !== "wits" &&
-      requestedCountries.length > 0 &&
-      requestedCountries.length <= 3 &&
-      (!partnerCodesFilter.length || partnerCodesFilter.length <= 8);
+      requestedCountries.length > 0;
 
     let comtradeBatchByReporter = null;
     let comtradeBatchError = null;
     if (shouldUseComtradeBatch) {
       try {
-        comtradeBatchByReporter = await fetchTradeSeriesBatch({
+        comtradeBatchByReporter = await fetchTradeSeriesBatchChunked({
           reporterCodes: requestedCountries.map((country) => country.reporterCode),
           hs,
           key,
           partnerCodesFilter: partnerCodesFilter.length ? partnerCodesFilter : null
         });
+        if (!Object.keys(comtradeBatchByReporter || {}).length) {
+          comtradeBatchByReporter = null;
+        }
       } catch (error) {
         comtradeBatchError = error;
         console.log("Comtrade batch error:", error.message);
@@ -754,7 +786,7 @@ export default async function handler(req, res) {
 
     const comtradeConcurrency = source === "wits"
       ? 2
-      : (requestedCountries.length >= 20 ? 4 : (requestedCountries.length >= 8 ? 3 : 2));
+      : (comtradeBatchByReporter ? 1 : (requestedCountries.length >= 20 ? 2 : (requestedCountries.length >= 8 ? 2 : 1)));
 
     const countries = await mapWithConcurrency(
       requestedCountries,
