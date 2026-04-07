@@ -33,10 +33,9 @@ const ep=E[action];
 if(!ep)return res.json({error:'Noma\'lum: '+action,available:Object.keys(E)});
 let url=B+ep[1];
 const p={...body};delete p.action;delete p.api_key;
-// people_enrichment: id POST body da qoladi (URL ga qo'shilmaydi)
-// boshqa {id} endpointlari uchun URL ga qo'shish
-if(action!=='people_enrichment' && action!=='bulk_people_enrichment'){
-  if(ep[1].includes('{id}') && p.id){url=url.replace('{id}',p.id);delete p.id;}
+// people_enrichment va bulk: id URL ga o'tilmaydi, body da qoladi
+if(action!=='people_enrichment'&&action!=='bulk_people_enrichment'){
+  if(ep[1].includes('{id}')&&p.id){url=url.replace('{id}',p.id);delete p.id;}
 }
 if(ep[0]==='GET'){const q=new URLSearchParams();Object.keys(p).forEach(k=>{if(p[k]!=null)q.append(k,typeof p[k]==='object'?JSON.stringify(p[k]):p[k]);});const s=q.toString();if(s)url+=(url.includes('?')?'&':'?')+s;}
 const o={method:ep[0],headers:{'Content-Type':'application/json','Cache-Control':'no-cache','x-api-key':key,'accept':'application/json'}};
