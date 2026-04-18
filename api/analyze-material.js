@@ -30,6 +30,43 @@ function parseGeminiError(raw) {
   }
 }
 
+// Gemma models don't support system_instruction — fold system prompt into the user message
+function buildRequestBody(model, systemPrompt, userText) {
+  const isGemma = /^gemma/i.test(model);
+  if (isGemma) {
+    return {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: systemPrompt + '\n\n---\n\n' + userText }]
+        }
+      ],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+    };
+  }
+  return {
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+  };
+}
+
+async function tryModel(model, apiKey, systemPrompt, userText) {
+  const body = buildRequestBody(model, systemPrompt, userText);
+  const upstream = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
+      body: JSON.stringify(body)
+    }
+  );
+  return upstream;
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -51,7 +88,27 @@ export default async function handler(req, res) {
       process.env.ANTHROPIC_SYSTEM_PROMPT ||
       ''
     ).trim();
-    const model = String(process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+
+    // Build model cascade: client-requested > env default > Gemma fallbacks > Gemini-flash
+    const requestedModel = String(body.model || '').trim();
+    const requestedFallbacks = Array.isArray(body.modelFallbacks)
+      ? body.modelFallbacks.map(m => String(m || '').trim()).filter(Boolean)
+      : [];
+    const envModel = String(process.env.GEMINI_MODEL || '').trim();
+    const defaultCascade = [
+      'gemma-3-27b-it',
+      'gemma-3-12b-it',
+      'gemma-3-4b-it',
+      'gemini-2.5-flash'
+    ];
+    const modelList = [];
+    const seen = new Set();
+    [requestedModel, envModel, ...requestedFallbacks, ...defaultCascade].forEach(m => {
+      if (m && !seen.has(m)) {
+        modelList.push(m);
+        seen.add(m);
+      }
+    });
 
     if (!apiKey) {
       return res.status(500).json({
@@ -93,39 +150,48 @@ export default async function handler(req, res) {
       JSON.stringify(tradeContext, null, 2)
     ].join('\n');
 
-    const upstream = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey
-        },
-        body: JSON.stringify({
-          system_instruction: {
-            parts: [{ text: systemPrompt }]
-          },
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: contextText }]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 8192
-          }
-        })
+    // Cascade through models — switch to next on 429/5xx
+    let upstream = null;
+    let usedModel = null;
+    let lastErr = null;
+    for (const model of modelList) {
+      try {
+        const r = await tryModel(model, apiKey, systemPrompt, contextText);
+        if (r.ok) {
+          upstream = r;
+          usedModel = model;
+          break;
+        }
+        // 429 or 5xx — try next model
+        if (r.status === 429 || r.status >= 500) {
+          const detail = await r.text();
+          lastErr = { status: r.status, detail, model };
+          console.warn(`[analyze-material] ${model} -> ${r.status}, trying next`);
+          continue;
+        }
+        // 4xx other than 429 — bail
+        const detail = await r.text();
+        const err = parseGeminiError(detail);
+        return res.status(r.status).json({
+          error: err.message || 'Gemini API xato qaytardi',
+          detail: err.raw,
+          model
+        });
+      } catch (e) {
+        lastErr = { message: e.message, model };
+        console.warn(`[analyze-material] ${model} -> exception:`, e.message);
+        continue;
       }
-    );
+    }
 
-    if (!upstream.ok) {
-      const detail = await upstream.text();
-      const err = parseGeminiError(detail);
-      return res.status(upstream.status).json({
-        error: err.message || 'Gemini API xato qaytardi',
-        detail: err.raw,
-        model
+    if (!upstream) {
+      const errMsg = lastErr && lastErr.detail
+        ? parseGeminiError(lastErr.detail).message
+        : (lastErr && lastErr.message) || 'Barcha modellar ishlamadi';
+      return res.status(lastErr ? lastErr.status || 500 : 500).json({
+        error: errMsg,
+        detail: 'Tried models: ' + modelList.join(', '),
+        triedModels: modelList
       });
     }
 
@@ -133,6 +199,7 @@ export default async function handler(req, res) {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Used-Model', usedModel);
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
     const reader = upstream.body && upstream.body.getReader ? upstream.body.getReader() : null;
