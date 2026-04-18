@@ -82,9 +82,9 @@ export default async function handler(req, res) {
     const requestKey2 = String(body.geminiKey2 || '').trim();
     const envKey = String(process.env.GEMINI_API_KEY || '').trim() || String(process.env.GOOGLE_API_KEY || '').trim();
     const envKey2 = String(process.env.GEMINI_API_KEY_2 || '').trim();
-    // Build key cascade: env primary, request primary, env secondary, request secondary
+    // Build key cascade: REQUEST keys first (live from frontend, no redeploy needed), then env keys
     const apiKeys = [];
-    [envKey, requestKey, envKey2, requestKey2].forEach(k => {
+    [requestKey, requestKey2, envKey, envKey2].forEach(k => {
       if (k && !apiKeys.includes(k)) apiKeys.push(k);
     });
     const apiKey = apiKeys[0] || '';
