@@ -79,10 +79,15 @@ export default async function handler(req, res) {
     const tradeContext = body.tradeContext && typeof body.tradeContext === 'object' ? body.tradeContext : null;
     if (!materialName) return res.status(400).json({ error: 'materialName kerak' });
 
-    const apiKey =
-      String(process.env.GEMINI_API_KEY || '').trim() ||
-      String(process.env.GOOGLE_API_KEY || '').trim() ||
-      requestKey;
+    const requestKey2 = String(body.geminiKey2 || '').trim();
+    const envKey = String(process.env.GEMINI_API_KEY || '').trim() || String(process.env.GOOGLE_API_KEY || '').trim();
+    const envKey2 = String(process.env.GEMINI_API_KEY_2 || '').trim();
+    // Build key cascade: env primary, request primary, env secondary, request secondary
+    const apiKeys = [];
+    [envKey, requestKey, envKey2, requestKey2].forEach(k => {
+      if (k && !apiKeys.includes(k)) apiKeys.push(k);
+    });
+    const apiKey = apiKeys[0] || '';
     const systemPrompt = String(
       process.env.GEMINI_SYSTEM_PROMPT ||
       process.env.ANTHROPIC_SYSTEM_PROMPT ||
@@ -96,10 +101,10 @@ export default async function handler(req, res) {
       : [];
     const envModel = String(process.env.GEMINI_MODEL || '').trim();
     const defaultCascade = [
+      'gemini-2.5-flash',
       'gemma-3-27b-it',
       'gemma-3-12b-it',
-      'gemma-3-4b-it',
-      'gemini-2.5-flash'
+      'gemma-3-4b-it'
     ];
     const modelList = [];
     const seen = new Set();
@@ -150,37 +155,42 @@ export default async function handler(req, res) {
       JSON.stringify(tradeContext, null, 2)
     ].join('\n');
 
-    // Cascade through models — switch to next on 429/5xx
+    // Cascade through (key x model) — switch to next model on 429/5xx, then next key on quota
     let upstream = null;
     let usedModel = null;
+    let usedKeyIdx = 0;
     let lastErr = null;
-    for (const model of modelList) {
-      try {
-        const r = await tryModel(model, apiKey, systemPrompt, contextText);
-        if (r.ok) {
-          upstream = r;
-          usedModel = model;
-          break;
-        }
-        // 429 or 5xx — try next model
-        if (r.status === 429 || r.status >= 500) {
+    keyLoop:
+    for (let ki = 0; ki < apiKeys.length; ki++) {
+      const key = apiKeys[ki];
+      for (const model of modelList) {
+        try {
+          const r = await tryModel(model, key, systemPrompt, contextText);
+          if (r.ok) {
+            upstream = r;
+            usedModel = model;
+            usedKeyIdx = ki;
+            break keyLoop;
+          }
+          if (r.status === 429 || r.status >= 500) {
+            const detail = await r.text();
+            lastErr = { status: r.status, detail, model, keyIdx: ki };
+            console.warn(`[analyze-material] key#${ki+1} ${model} -> ${r.status}, trying next`);
+            continue;
+          }
+          // 4xx other than 429 — bail
           const detail = await r.text();
-          lastErr = { status: r.status, detail, model };
-          console.warn(`[analyze-material] ${model} -> ${r.status}, trying next`);
+          const err = parseGeminiError(detail);
+          return res.status(r.status).json({
+            error: err.message || 'Gemini API xato qaytardi',
+            detail: err.raw,
+            model
+          });
+        } catch (e) {
+          lastErr = { message: e.message, model, keyIdx: ki };
+          console.warn(`[analyze-material] key#${ki+1} ${model} -> exception:`, e.message);
           continue;
         }
-        // 4xx other than 429 — bail
-        const detail = await r.text();
-        const err = parseGeminiError(detail);
-        return res.status(r.status).json({
-          error: err.message || 'Gemini API xato qaytardi',
-          detail: err.raw,
-          model
-        });
-      } catch (e) {
-        lastErr = { message: e.message, model };
-        console.warn(`[analyze-material] ${model} -> exception:`, e.message);
-        continue;
       }
     }
 
@@ -200,6 +210,7 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Used-Model', usedModel);
+    res.setHeader('X-Used-Key', String(usedKeyIdx + 1));
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
     const reader = upstream.body && upstream.body.getReader ? upstream.body.getReader() : null;
