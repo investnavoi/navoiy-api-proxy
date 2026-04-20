@@ -3,6 +3,9 @@ const TRADEATLAS_LOGIN_URL = TRADEATLAS_BASE + '/api/v1/user/login';
 const TRADEATLAS_FIRMS_URL = TRADEATLAS_BASE + '/api/v1/firms/search';
 const TRADEATLAS_IMPORTERS_URL = TRADEATLAS_BASE + '/api/v1/importers/search';
 const TRADEATLAS_SHIPMENTS_URL = TRADEATLAS_BASE + '/api/v1/shipments/search';
+const TRADEATLAS_USAGE_URL = TRADEATLAS_BASE + '/api/v1/statistics/usage';
+const TRADEATLAS_FIRMS_COUNT_URL = TRADEATLAS_BASE + '/api/v1/firms/count';
+const TRADEATLAS_SHIPMENTS_COUNT_URL = TRADEATLAS_BASE + '/api/v1/shipments/count';
 
 let _tradeAtlasToken = '';
 let _tradeAtlasTokenExpiresAt = 0;
@@ -129,6 +132,23 @@ async function tradeAtlasPost(url, payload, retryAuth){
   if(response.status === 401 && retryAuth !== false){
     await loginTradeAtlas(true);
     return tradeAtlasPost(url, payload, false);
+  }
+  if(!response.ok){
+    throw new Error(getErrorMessage(data, 'TradeAtlas xato: ' + response.status));
+  }
+  return data;
+}
+
+async function tradeAtlasGet(url, retryAuth){
+  const token = await loginTradeAtlas(false);
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Authorization': token }
+  });
+  const data = await readJsonSafe(response);
+  if(response.status === 401 && retryAuth !== false){
+    await loginTradeAtlas(true);
+    return tradeAtlasGet(url, false);
   }
   if(!response.ok){
     throw new Error(getErrorMessage(data, 'TradeAtlas xato: ' + response.status));
@@ -378,6 +398,24 @@ export default async function handler(req, res){
 
   try {
     const body = parseBody(req);
+    const mode = String((body && body.mode) || (req && req.query && req.query.mode) || '').toLowerCase();
+
+    // Kredit holati — GET /statistics/usage (kredit yemaydi)
+    if(mode === 'usage' || (body && body.endpoint === 'statistics/usage')){
+      const usage = await tradeAtlasGet(TRADEATLAS_USAGE_URL, true);
+      return res.json({ source: 'TradeAtlas', mode: 'usage', usage: usage, raw: usage });
+    }
+
+    // Count endpointlari — kredit yemaydi, dastlabki tekshiruv uchun
+    if(mode === 'firms_count' || (body && body.endpoint === 'firms/count')){
+      const data = await tradeAtlasPost(TRADEATLAS_FIRMS_COUNT_URL, body.payload || body, true);
+      return res.json({ source: 'TradeAtlas', mode: 'firms_count', data: data });
+    }
+    if(mode === 'shipments_count' || (body && body.endpoint === 'shipments/count')){
+      const data = await tradeAtlasPost(TRADEATLAS_SHIPMENTS_COUNT_URL, body.payload || body, true);
+      return res.json({ source: 'TradeAtlas', mode: 'shipments_count', data: data });
+    }
+
     const hasTargetShape = !!(
       (body && (body.targetCountries || body.sourceCountries)) ||
       (req && req.query && (req.query.targetCountries || req.query.sourceCountries))
