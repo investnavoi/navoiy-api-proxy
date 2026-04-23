@@ -12,7 +12,7 @@ const COUNTRY_DEFS = [
   { iso3: 'AUT', wb: 'AUT', iea: 'Austria', display: 'Austria', aliases: ['austria', 'avstriya'] },
   { iso3: 'POL', wb: 'POL', iea: 'Poland', display: 'Poland', aliases: ['poland', 'polsha'] },
   { iso3: 'CZE', wb: 'CZE', iea: 'Czechia', display: 'Czechia', aliases: ['czechia', 'czech republic', 'chexiya'] },
-  { iso3: 'TUR', wb: 'TUR', iea: 'Republic of Türkiye', display: 'Türkiye', aliases: ['turkiye', 'türkiye', 'turkey', 'turkiya'] },
+  { iso3: 'TUR', wb: 'TUR', iea: 'Republic of Türkiye', display: 'Türkiye', aliases: ['turkiye', 'türkiye', 'tuerkiye', 'turkey', 'turkiya', 'turciya'] },
   { iso3: 'ARE', wb: 'ARE', iea: 'United Arab Emirates', display: 'United Arab Emirates', aliases: ['united arab emirates', 'uae', 'bae', 'amirliklar', "birlashgan arab amirliklari"] },
   { iso3: 'SAU', wb: 'SAU', iea: 'Saudi Arabia', display: 'Saudi Arabia', aliases: ['saudi arabia', 'saudiya', 'saudiya arabistoni'] },
   { iso3: 'QAT', wb: 'QAT', iea: 'Qatar', display: 'Qatar', aliases: ['qatar'] },
@@ -259,23 +259,20 @@ async function fetchWorldBankIndicator(iso3, indicator) {
 }
 
 function latestIloUsdValue(rows) {
-  const preferredLabels = ['Currency: U.S. dollars', 'Currency: 2021 PPP $', 'Currency: Local currency'];
-  for (const label of preferredLabels) {
-    const matches = rows
-      .filter((row) => String(row['classif1.label'] || '').trim() === label)
-      .filter((row) => row.obs_value !== undefined && row.obs_value !== null && String(row.obs_value).trim() !== '')
-      .sort((a, b) => Number(b.time || 0) - Number(a.time || 0));
-    if (matches.length) {
-      const row = matches[0];
-      return {
-        value: Number(row.obs_value),
-        year: String(row.time || ''),
-        currencyLabel: label,
-        sourceLabel: row['source.label'] || '',
-        noteIndicator: row['note_indicator.label'] || '',
-        noteSource: row['note_source.label'] || ''
-      };
-    }
+  const matches = rows
+    .filter((row) => String(row['classif1.label'] || '').trim() === 'Currency: U.S. dollars')
+    .filter((row) => row.obs_value !== undefined && row.obs_value !== null && String(row.obs_value).trim() !== '')
+    .sort((a, b) => Number(b.time || 0) - Number(a.time || 0));
+  if (matches.length) {
+    const row = matches[0];
+    return {
+      value: Number(row.obs_value),
+      year: String(row.time || ''),
+      currencyLabel: 'Currency: U.S. dollars',
+      sourceLabel: row['source.label'] || '',
+      noteIndicator: row['note_indicator.label'] || '',
+      noteSource: row['note_source.label'] || ''
+    };
   }
   return null;
 }
@@ -288,9 +285,7 @@ async function fetchIlostatMonthlyWage(iso3) {
   if (!value) return null;
   const unit = value.currencyLabel === 'Currency: U.S. dollars'
     ? 'USD/month'
-    : value.currencyLabel === 'Currency: 2021 PPP $'
-      ? 'PPP$/month'
-      : 'Local currency/month';
+    : 'USD/month';
   return {
     ...value,
     source: 'ILOSTAT API',
@@ -318,42 +313,25 @@ function latestIeaProductValue(rows, productCode) {
   };
 }
 
-// Static industrial electricity prices (USD/MWh) — fallback when IEA API has no data
-// Sources: IEA, GlobalPetrolPrices, World Bank estimates (2022-2024)
-const STATIC_ELECTRICITY_PRICES = {
-  // Asia
-  BGD: 85, IND: 95, PAK: 110, LKA: 120, NPL: 80, MMR: 70, KHM: 160, VNM: 78, THA: 105,
-  MYS: 60, IDN: 90, PHL: 160, SGP: 170, KOR: 100, JPN: 165, TWN: 100, HKG: 160,
-  CHN: 85, MNG: 50,
-  // Central Asia (IEA usually covers these)
-  KAZ: 45, KGZ: 30, TJK: 25, TKM: 20, AZE: 55, ARM: 75, GEO: 80,
-  // Middle East
-  IRN: 10, IRQ: 30, SAU: 48, ARE: 65, QAT: 35, KWT: 30, OMN: 55, JOR: 130, LBN: 140,
-  ISR: 110,
-  // Europe (IEA usually covers)
-  UKR: 80, BLR: 55, MDA: 110, SRB: 75, BGR: 105, ROU: 120, HRV: 130, BIH: 85,
-  // Africa
-  EGY: 50, MAR: 110, DZA: 40, TUN: 95, NGA: 100, ZAF: 95, ETH: 45, KEN: 160,
-  GHA: 130, TZA: 140, UGA: 140, SEN: 175, CIV: 140, CMR: 120, AGO: 80, MOZ: 90,
-  ZWE: 100, ZMB: 90,
-  // Americas
-  BRA: 80, ARG: 50, CHL: 110, COL: 100, PER: 75, MEX: 90, VEN: 20,
-  // Oceania
-  AUS: 110, NZL: 100,
-};
-
-function getStaticElectricityPrice(iso3) {
-  const code = String(iso3 || '').toUpperCase();
-  const price = STATIC_ELECTRICITY_PRICES[code];
-  if (!price) return null;
-  return {
-    value: price,
-    year: '2023',
-    unit: 'USD/MWh',
-    product: 'Electricity',
-    source: 'GlobalPetrolPrices / IEA estimate',
-    indicator: 'Industrial electricity price (estimate)'
-  };
+// Ember Climate Energy Prices — public API (electricity for 100+ countries, updated monthly)
+// Docs: https://api.ember-energy.org/
+async function fetchEmberElectricityPrice(iso3) {
+  try {
+    const url = `https://api.ember-energy.org/v1/electricity-prices/monthly?entity_code=${encodeURIComponent(iso3)}&is_aggregate_entity=false&start_date=2023-01&order_by=date%20DESC&limit=1`;
+    const json = await fetchJson(url);
+    const row = Array.isArray(json?.data) && json.data.length ? json.data[0] : null;
+    if (!row || row.price_usd_mwh === undefined || row.price_usd_mwh === null) return null;
+    return {
+      value: Number(row.price_usd_mwh),
+      year: String(row.date || '').slice(0, 4),
+      unit: 'USD/MWh',
+      product: 'Electricity (industrial)',
+      source: 'Ember Climate Energy API',
+      indicator: 'price_usd_mwh/monthly'
+    };
+  } catch (e) {
+    return null;
+  }
 }
 
 async function fetchIeaIndustrialBundle(countryName) {
@@ -584,31 +562,25 @@ export default async function handler(req, res) {
     const [
       countryGdp,
       countryIndustryShare,
-      countryTaxLabor,
-      countryTaxProfit,
-      countryTaxOther,
+      countryTaxRevenue,
       countryWage,
       countryIea,
       uzGdp,
       uzIndustryShare,
-      uzTaxLabor,
-      uzTaxProfit,
-      uzTaxOther,
+      uzTaxRevenue,
       uzWage,
       uzIea
     ] = await Promise.all([
       fetchWorldBankIndicator(country.wb, 'NY.GDP.PCAP.CD').catch(() => null),
       fetchWorldBankIndicator(country.wb, 'NV.IND.TOTL.ZS').catch(() => null),
-      fetchWorldBankIndicator(country.wb, 'PAY.TAX.LABR.TAX.CONTR.ZS').catch(() => null),
-      fetchWorldBankIndicator(country.wb, 'PAY.TAX.PRFT.CP.ZS').catch(() => null),
-      fetchWorldBankIndicator(country.wb, 'OTHR.TAX.PAID.ZS').catch(() => null),
+      // GC.TAX.TOTL.GD.ZS — Tax revenue (% of GDP) — actively updated by IMF/WB, replaces
+      // discontinued Doing Business PAY.TAX.* indicators.
+      fetchWorldBankIndicator(country.wb, 'GC.TAX.TOTL.GD.ZS').catch(() => null),
       fetchIlostatMonthlyWage(country.iso3).catch(() => null),
       fetchIeaIndustrialBundle(country.iea).catch(() => ({ electricity: null, naturalGas: null })),
       fetchWorldBankIndicator(uzbekistan.wb, 'NY.GDP.PCAP.CD').catch(() => null),
       fetchWorldBankIndicator(uzbekistan.wb, 'NV.IND.TOTL.ZS').catch(() => null),
-      fetchWorldBankIndicator(uzbekistan.wb, 'PAY.TAX.LABR.TAX.CONTR.ZS').catch(() => null),
-      fetchWorldBankIndicator(uzbekistan.wb, 'PAY.TAX.PRFT.CP.ZS').catch(() => null),
-      fetchWorldBankIndicator(uzbekistan.wb, 'OTHR.TAX.PAID.ZS').catch(() => null),
+      fetchWorldBankIndicator(uzbekistan.wb, 'GC.TAX.TOTL.GD.ZS').catch(() => null),
       fetchIlostatMonthlyWage(uzbekistan.iso3).catch(() => null),
       fetchIeaIndustrialBundle(uzbekistan.iea).catch(() => ({ electricity: null, naturalGas: null }))
     ]);
@@ -617,25 +589,19 @@ export default async function handler(req, res) {
     if (!countryElectricity && country.iso3 === 'USA') {
       countryElectricity = await fetchUsEiaIndustrialElectricity().catch(() => null);
     }
-    // Fallback to static prices if IEA has no data for this country
+    // Real-source fallback: Ember Climate API (live, monthly updated)
     if (!countryElectricity) {
-      countryElectricity = getStaticElectricityPrice(country.iso3);
+      countryElectricity = await fetchEmberElectricityPrice(country.iso3).catch(() => null);
     }
     let uzElectricity = uzIea.electricity;
     if (!uzElectricity) {
-      uzElectricity = getStaticElectricityPrice('UZB');
+      uzElectricity = await fetchEmberElectricityPrice('UZB').catch(() => null);
     }
 
-    const countryTaxPieces = [countryTaxLabor, countryTaxProfit, countryTaxOther].filter(Boolean);
-    const uzTaxPieces = [uzTaxLabor, uzTaxProfit, uzTaxOther].filter(Boolean);
-    const countryTaxTotal = countryTaxPieces.length
-      ? countryTaxPieces.reduce((sum, row) => sum + Number(row.value || 0), 0)
-      : null;
-    const uzTaxTotal = uzTaxPieces.length
-      ? uzTaxPieces.reduce((sum, row) => sum + Number(row.value || 0), 0)
-      : null;
-    const countryTaxYear = countryTaxPieces.length ? countryTaxPieces.map((row) => row.year).filter(Boolean).sort().slice(-1)[0] : null;
-    const uzTaxYear = uzTaxPieces.length ? uzTaxPieces.map((row) => row.year).filter(Boolean).sort().slice(-1)[0] : null;
+    const countryTaxTotal = countryTaxRevenue ? Number(countryTaxRevenue.value) : null;
+    const uzTaxTotal = uzTaxRevenue ? Number(uzTaxRevenue.value) : null;
+    const countryTaxYear = countryTaxRevenue ? countryTaxRevenue.year : null;
+    const uzTaxYear = uzTaxRevenue ? uzTaxRevenue.year : null;
 
     const payload = {
       status: 'ok',
@@ -672,21 +638,10 @@ export default async function handler(req, res) {
           countryYear: countryTaxYear,
           uzbekistan: uzTaxTotal,
           uzbekistanYear: uzTaxYear,
-          unit: '% of profit',
-          source: 'World Bank Open Data API',
-          indicator: 'PAY.TAX.LABR.TAX.CONTR.ZS + PAY.TAX.PRFT.CP.ZS + OTHR.TAX.PAID.ZS',
-          components: {
-            country: {
-              laborTax: countryTaxLabor ? countryTaxLabor.value : null,
-              profitTax: countryTaxProfit ? countryTaxProfit.value : null,
-              otherTaxes: countryTaxOther ? countryTaxOther.value : null
-            },
-            uzbekistan: {
-              laborTax: uzTaxLabor ? uzTaxLabor.value : null,
-              profitTax: uzTaxProfit ? uzTaxProfit.value : null,
-              otherTaxes: uzTaxOther ? uzTaxOther.value : null
-            }
-          }
+          unit: '% of GDP',
+          source: 'World Bank / IMF Tax Revenue',
+          indicator: 'GC.TAX.TOTL.GD.ZS',
+          label: 'Tax revenue (% of GDP)'
         },
         monthlyWage: {
           country: countryWage ? countryWage.value : null,
