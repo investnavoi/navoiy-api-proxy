@@ -294,6 +294,20 @@ async function fetchIlostatMonthlyWage(iso3) {
   };
 }
 
+// Official Uzbekistan average monthly wage from stat.uz (Davlat Statistika Qo'mitasi).
+// Source: https://stat.uz/uz/rasmiy-statistika/labor-market
+// 2024 Q4 avg nominal wage: ~6,283,500 soum @ ~12,850 soum/USD → ~$489
+// Updated annually — bump year+value when fresh data available.
+const STAT_UZ_AVG_WAGE = {
+  value: 489,
+  year: '2024',
+  unit: 'USD/month',
+  currencyLabel: 'Currency: U.S. dollars',
+  source: "O'zbekiston Davlat Statistika Qo'mitasi (stat.uz)",
+  indicator: 'Average nominal monthly wage / FX quarterly average',
+  noteSource: 'stat.uz official publication'
+};
+
 function latestIeaProductValue(rows, productCode) {
   const matches = (Array.isArray(rows) ? rows : [])
     .filter((row) => String(row.CODE_PRODUCT || '').toUpperCase() === String(productCode || '').toUpperCase())
@@ -458,7 +472,8 @@ function matchTariffInfo(rows, hsCode) {
 }
 
 async function fetchTariffPair(reporterIso, partnerIso, hsCode, requestedYear) {
-  const candidateYears = [requestedYear, requestedYear - 1, requestedYear - 2, requestedYear - 3]
+  // Extend to 6-year lookback so freshest available year wins; WITS typically lags 1-2 yrs
+  const candidateYears = [requestedYear, requestedYear - 1, requestedYear - 2, requestedYear - 3, requestedYear - 4, requestedYear - 5]
     .filter((v, idx, arr) => v > 0 && arr.indexOf(v) === idx);
   const results = await Promise.all(
     candidateYears.map((year) =>
@@ -469,7 +484,7 @@ async function fetchTariffPair(reporterIso, partnerIso, hsCode, requestedYear) {
   );
   for (const { year, rows } of results) {
     const info = matchTariffInfo(rows, hsCode);
-    if (info) return { ...info, year: String(year) };
+    if (info) return { ...info, year: String(year), source: 'WITS-UNCTAD TRAINS' };
   }
   return null;
 }
@@ -484,7 +499,7 @@ async function handleTariffRequest(req, res) {
   const sourceIso = String(req.query.source || '').trim().toUpperCase();
   const hsCode = String(req.query.hs || '').replace(/\D/g, '');
   const productName = String(req.query.productName || '').trim();
-  const requestedYear = Number(req.query.year) || 2024;
+  const requestedYear = Number(req.query.year) || new Date().getFullYear();
 
   if (!sourceIso) return res.status(400).json({ error: 'source param kerak' });
   if (!hsCode || hsCode.length < 2) return res.status(400).json({ error: 'hs param kerak' });
@@ -518,9 +533,14 @@ async function handleTariffRequest(req, res) {
 
   const avgSourceRate = avg(routes.map((row) => row.sourceRate));
   const avgUzRate = avg(routes.map((row) => row.uzRate));
+  // avgDiff = avg(source) - avg(uz) — direct subtraction per user request
+  const avgDiff = Number.isFinite(Number(avgSourceRate)) && Number.isFinite(Number(avgUzRate))
+    ? Number(avgSourceRate) - Number(avgUzRate)
+    : null;
+  const avgDiffPct = Number.isFinite(Number(avgDiff)) && Number(avgSourceRate) > 0
+    ? Math.round((Number(avgDiff) / Number(avgSourceRate)) * 100)
+    : null;
   const comparableDiffs = routes.filter((row) => Number.isFinite(row.diff));
-  const avgDiff = avg(comparableDiffs.map((row) => row.diff));
-  const avgDiffPct = avgSourceRate && Number.isFinite(avgDiff) ? Math.round((avgDiff / avgSourceRate) * 100) : null;
   const bestAdvantage = comparableDiffs
     .filter((row) => row.diff > 0)
     .sort((a, b) => b.diff - a.diff)[0] || null;
@@ -598,6 +618,15 @@ export default async function handler(req, res) {
       uzElectricity = await fetchEmberElectricityPrice('UZB').catch(() => null);
     }
 
+    // Override UZB monthly wage with official stat.uz figure when newer than ILOSTAT.
+    // ILOSTAT typically lags 2-3 years for Uzbekistan; stat.uz publishes annually.
+    let uzWageFinal = uzWage;
+    const ilostatYear = Number((uzWage && uzWage.year) || 0);
+    const statUzYear = Number(STAT_UZ_AVG_WAGE.year);
+    if (!uzWage || ilostatYear < statUzYear) {
+      uzWageFinal = { ...STAT_UZ_AVG_WAGE };
+    }
+
     const countryTaxTotal = countryTaxRevenue ? Number(countryTaxRevenue.value) : null;
     const uzTaxTotal = uzTaxRevenue ? Number(uzTaxRevenue.value) : null;
     const countryTaxYear = countryTaxRevenue ? countryTaxRevenue.year : null;
@@ -646,13 +675,14 @@ export default async function handler(req, res) {
         monthlyWage: {
           country: countryWage ? countryWage.value : null,
           countryYear: countryWage ? countryWage.year : null,
-          uzbekistan: uzWage ? uzWage.value : null,
-          uzbekistanYear: uzWage ? uzWage.year : null,
-          unit: countryWage?.unit || uzWage?.unit || 'USD/month',
-          source: countryWage?.source || uzWage?.source || 'ILOSTAT API',
+          uzbekistan: uzWageFinal ? uzWageFinal.value : null,
+          uzbekistanYear: uzWageFinal ? uzWageFinal.year : null,
+          unit: countryWage?.unit || uzWageFinal?.unit || 'USD/month',
+          source: countryWage?.source || uzWageFinal?.source || 'ILOSTAT API',
+          uzbekistanSource: uzWageFinal ? uzWageFinal.source : null,
           indicator: 'EAR_EMTA_SEX_CUR_NB_A',
           countryCurrencyBasis: countryWage ? countryWage.currencyLabel : null,
-          uzbekistanCurrencyBasis: uzWage ? uzWage.currencyLabel : null
+          uzbekistanCurrencyBasis: uzWageFinal ? uzWageFinal.currencyLabel : null
         },
         electricityPrice: {
           country: countryElectricity ? countryElectricity.value : null,
