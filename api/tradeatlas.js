@@ -205,10 +205,29 @@ function buildShipmentFirmSide(row, side){
     city_state: String(row && row[prefix + 'CityState'] || '').trim(),
     e_mail: String(row && row[prefix + 'Email'] || '').trim(),
     tel: String(row && row[prefix + 'Tel'] || '').trim(),
+    fax: String(row && row[prefix + 'Fax'] || '').trim(),
     web: String(row && row[prefix + 'Web'] || '').trim(),
     linkedin: String(row && row[prefix + 'Linkedin'] || '').trim(),
-    firm_address: String(row && row[prefix + 'Address'] || '').trim()
+    facebook: String(row && row[prefix + 'Facebook'] || '').trim(),
+    twitter: String(row && row[prefix + 'Twitter'] || '').trim(),
+    instagram: String(row && row[prefix + 'Instagram'] || '').trim(),
+    firm_address: String(row && row[prefix + 'Address'] || '').trim(),
+    tax_id: String(row && row[prefix + 'TaxId'] || '').trim(),
+    company_type_code: String(row && row[prefix + 'CompanyTypeCode'] || '').trim()
   };
+}
+
+function _taPushUnique(arr, val){
+  if(val == null) return;
+  const v = String(val).trim();
+  if(!v || arr.indexOf(v) !== -1) return;
+  arr.push(v);
+}
+
+function _taParseDateOrdinal(value){
+  if(!value) return 0;
+  const t = Date.parse(String(value));
+  return Number.isFinite(t) ? t : 0;
 }
 
 function aggregateShipmentsToFirms(rows, mode, sourceCountries){
@@ -230,25 +249,94 @@ function aggregateShipmentsToFirms(rows, mode, sourceCountries){
     const qty = shipmentQuantity(row);
     const counterpartCountry = String(row && row[counterpartSide + 'Country'] || '').trim();
     const counterpartCountryCode = normalizeCountryCode(row && row[counterpartSide + 'CountryCode']);
+    const counterpartName = String(row && row[counterpartSide + 'Name'] || '').trim();
     const unit = String(row && (row.quantityUnit || row.netWeightUnit || row.grossWeightUnit) || '').trim();
+    const fobUsd = Number(row && (row.usdFob || row.fobValue)) || 0;
+    const cifUsd = Number(row && (row.usdCif || row.cifValue)) || 0;
+    const statUsd = Number(row && row.statisticalValueUsd) || 0;
+    const unitPrice = Number(row && row.unitPrice) || 0;
+    const freight = Number(row && row.freightAmount) || 0;
+    const insurance = Number(row && row.insuranceAmount) || 0;
+    const grossWeight = Number(row && row.grossWeight) || 0;
+    const netWeight = Number(row && row.netWeight) || 0;
+    const grossWeightUnit = String(row && row.grossWeightUnit || '').trim();
+    const netWeightUnit = String(row && row.netWeightUnit || '').trim();
+    const containerCount = Number(row && row.containerCount) || 0;
+    const packageAmount = Number(row && row.packageAmount) || 0;
+    const packagesUnit = String(row && row.packagesUnit || '').trim();
+    const totalTeus = Number(row && row.totalTeus) || 0;
+    const arrivalDate = String(row && row.arrivalDate || '').trim();
+    const arrivalOrdinal = _taParseDateOrdinal(arrivalDate);
 
     if(!map.has(key)){
       map.set(key, {
+        // Identity
         firm_name: firm.firm_name,
         firm_country: firm.firm_country,
         firm_country_code: firm.firm_country_code,
         city_state: firm.city_state,
+        firm_address: firm.firm_address,
+        tax_id: firm.tax_id,
+        company_type_code: firm.company_type_code,
+        // Contact & Social
         e_mail: firm.e_mail,
         tel: firm.tel,
+        fax: firm.fax,
         web: firm.web,
         linkedin: firm.linkedin,
-        firm_address: firm.firm_address,
+        facebook: firm.facebook,
+        twitter: firm.twitter,
+        instagram: firm.instagram,
+        // Counts
         doc_count: 0,
+        // Value (USD)
         total_trade_value_usd: 0,
+        total_fob_usd: 0,
+        total_cif_usd: 0,
+        total_statistical_value_usd: 0,
+        total_freight_usd: 0,
+        total_insurance_usd: 0,
+        unit_price_samples: [],
+        // Volume
         total_quantity: 0,
         quantity_unit: unit,
+        total_gross_weight: 0,
+        total_net_weight: 0,
+        gross_weight_unit: grossWeightUnit,
+        net_weight_unit: netWeightUnit,
+        // Packaging
+        total_containers: 0,
+        total_packages: 0,
+        package_unit: packagesUnit,
+        total_teus: 0,
+        // Counterpart
         counterpart_countries: [],
         counterpart_country_codes: [],
+        counterpart_companies: [],
+        // Products
+        hs_codes: [],
+        hs_descriptions: [],
+        product_details: [],
+        brand_names: [],
+        countries_of_origin: [],
+        conditions_new_used: [],
+        // Logistics
+        ports_of_departure: [],
+        ports_of_arrival: [],
+        vessels: [],
+        incoterms: [],
+        transport_types: [],
+        payment_types: [],
+        regimes: [],
+        first_arrival_date: '',
+        last_arrival_date: '',
+        _first_arrival_ordinal: 0,
+        _last_arrival_ordinal: 0,
+        // Other parties
+        manufacturing_companies: [],
+        transport_companies: [],
+        notify_parties: [],
+        // Examples
         shipment_examples: []
       });
     }
@@ -256,34 +344,133 @@ function aggregateShipmentsToFirms(rows, mode, sourceCountries){
     const existing = map.get(key);
     existing.doc_count += 1;
     existing.total_trade_value_usd += tradeValue;
+    existing.total_fob_usd += fobUsd;
+    existing.total_cif_usd += cifUsd;
+    existing.total_statistical_value_usd += statUsd;
+    existing.total_freight_usd += freight;
+    existing.total_insurance_usd += insurance;
+    if(unitPrice > 0) existing.unit_price_samples.push(unitPrice);
     existing.total_quantity += qty;
+    existing.total_gross_weight += grossWeight;
+    existing.total_net_weight += netWeight;
+    existing.total_containers += containerCount;
+    existing.total_packages += packageAmount;
+    existing.total_teus += totalTeus;
+
+    // Fill-if-empty fields
     if(!existing.e_mail && firm.e_mail) existing.e_mail = firm.e_mail;
     if(!existing.tel && firm.tel) existing.tel = firm.tel;
+    if(!existing.fax && firm.fax) existing.fax = firm.fax;
     if(!existing.web && firm.web) existing.web = firm.web;
     if(!existing.linkedin && firm.linkedin) existing.linkedin = firm.linkedin;
+    if(!existing.facebook && firm.facebook) existing.facebook = firm.facebook;
+    if(!existing.twitter && firm.twitter) existing.twitter = firm.twitter;
+    if(!existing.instagram && firm.instagram) existing.instagram = firm.instagram;
     if(!existing.city_state && firm.city_state) existing.city_state = firm.city_state;
     if(!existing.firm_address && firm.firm_address) existing.firm_address = firm.firm_address;
+    if(!existing.tax_id && firm.tax_id) existing.tax_id = firm.tax_id;
+    if(!existing.company_type_code && firm.company_type_code) existing.company_type_code = firm.company_type_code;
     if(unit && !existing.quantity_unit) existing.quantity_unit = unit;
-    if(counterpartCountry && existing.counterpart_countries.indexOf(counterpartCountry) === -1){
-      existing.counterpart_countries.push(counterpartCountry);
+    if(grossWeightUnit && !existing.gross_weight_unit) existing.gross_weight_unit = grossWeightUnit;
+    if(netWeightUnit && !existing.net_weight_unit) existing.net_weight_unit = netWeightUnit;
+    if(packagesUnit && !existing.package_unit) existing.package_unit = packagesUnit;
+
+    // Counterpart
+    _taPushUnique(existing.counterpart_countries, counterpartCountry);
+    _taPushUnique(existing.counterpart_country_codes, counterpartCountryCode);
+    _taPushUnique(existing.counterpart_companies, counterpartName);
+
+    // Products
+    _taPushUnique(existing.hs_codes, row && row.hsCode);
+    _taPushUnique(existing.hs_descriptions, row && row.hsCodeDescription);
+    _taPushUnique(existing.product_details, row && row.productDetails);
+    _taPushUnique(existing.brand_names, row && row.brandName);
+    _taPushUnique(existing.countries_of_origin, row && row.countryOfOrigin);
+    _taPushUnique(existing.conditions_new_used, row && row.conditionNewUsed);
+
+    // Logistics
+    _taPushUnique(existing.ports_of_departure, row && row.portOfDeparture);
+    _taPushUnique(existing.ports_of_arrival, row && row.portOfArrival);
+    _taPushUnique(existing.vessels, row && row.vesselName);
+    _taPushUnique(existing.incoterms, row && row.incoterms);
+    _taPushUnique(existing.transport_types, row && row.transportType);
+    _taPushUnique(existing.payment_types, row && row.paymentType);
+    _taPushUnique(existing.regimes, row && row.regime);
+
+    // Arrival dates (min/max)
+    if(arrivalOrdinal > 0){
+      if(!existing._first_arrival_ordinal || arrivalOrdinal < existing._first_arrival_ordinal){
+        existing._first_arrival_ordinal = arrivalOrdinal;
+        existing.first_arrival_date = arrivalDate;
+      }
+      if(arrivalOrdinal > existing._last_arrival_ordinal){
+        existing._last_arrival_ordinal = arrivalOrdinal;
+        existing.last_arrival_date = arrivalDate;
+      }
     }
-    if(counterpartCountryCode && existing.counterpart_country_codes.indexOf(counterpartCountryCode) === -1){
-      existing.counterpart_country_codes.push(counterpartCountryCode);
-    }
+
+    // Other parties
+    _taPushUnique(existing.manufacturing_companies, row && row.manufacturingCompany);
+    _taPushUnique(existing.transport_companies, row && row.transportCompany);
+    _taPushUnique(existing.notify_parties, row && row.notifyParty);
+
+    // Examples (up to 5, richer payload)
     if(existing.shipment_examples.length < 5){
       existing.shipment_examples.push({
+        billOfLadingNo: row && row.billOfLadingNo,
+        declarationNumber: row && row.declarationNumber,
+        arrivalDate: arrivalDate,
         importerCountry: row && row.importerCountry,
+        importerName: row && row.importerName,
         exporterCountry: row && row.exporterCountry,
+        exporterName: row && row.exporterName,
         productDetails: row && row.productDetails,
         hsCode: row && row.hsCode,
-        statisticalValueUsd: tradeValue,
+        hsCodeDescription: row && row.hsCodeDescription,
+        brandName: row && row.brandName,
+        countryOfOrigin: row && row.countryOfOrigin,
+        statisticalValueUsd: statUsd || tradeValue,
+        usdFob: fobUsd,
+        usdCif: cifUsd,
+        unitPrice: unitPrice,
+        freightAmount: freight,
+        insuranceAmount: insurance,
         quantity: qty,
-        quantityUnit: unit
+        quantityUnit: unit,
+        grossWeight: grossWeight,
+        netWeight: netWeight,
+        grossWeightUnit: grossWeightUnit,
+        netWeightUnit: netWeightUnit,
+        containerCount: containerCount,
+        packageAmount: packageAmount,
+        packagesUnit: packagesUnit,
+        totalTeus: totalTeus,
+        portOfDeparture: row && row.portOfDeparture,
+        portOfArrival: row && row.portOfArrival,
+        vesselName: row && row.vesselName,
+        incoterms: row && row.incoterms,
+        paymentType: row && row.paymentType,
+        transportType: row && row.transportType,
+        regime: row && row.regime,
+        manufacturingCompany: row && row.manufacturingCompany,
+        transportCompany: row && row.transportCompany,
+        notifyParty: row && row.notifyParty
       });
     }
   });
 
-  return Array.from(map.values()).sort(function(a, b){
+  // Compute averages and strip internal ordinals
+  const out = Array.from(map.values()).map(function(firm){
+    const samples = firm.unit_price_samples || [];
+    const avgPrice = samples.length ? samples.reduce(function(a, b){ return a + b; }, 0) / samples.length : 0;
+    firm.avg_unit_price_usd = avgPrice;
+    delete firm.unit_price_samples;
+    delete firm._first_arrival_ordinal;
+    delete firm._last_arrival_ordinal;
+    return firm;
+  });
+
+  return out.sort(function(a, b){
     return (b.total_trade_value_usd || 0) - (a.total_trade_value_usd || 0) ||
       (b.doc_count || 0) - (a.doc_count || 0);
   });
