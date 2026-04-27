@@ -313,6 +313,8 @@ function aggregateShipmentsToFirms(rows, mode, sourceCountries){
         counterpart_countries: [],
         counterpart_country_codes: [],
         counterpart_companies: [],
+        // Counterpart firms — to'liq aloqali firmalar (har firma uchun: nomi, davlati, kontakti, hajm va qiymat)
+        counterpart_firms: [],
         // Products
         hs_codes: [],
         hs_descriptions: [],
@@ -379,6 +381,44 @@ function aggregateShipmentsToFirms(rows, mode, sourceCountries){
     _taPushUnique(existing.counterpart_countries, counterpartCountry);
     _taPushUnique(existing.counterpart_country_codes, counterpartCountryCode);
     _taPushUnique(existing.counterpart_companies, counterpartName);
+
+    // Counterpart firm — har bir hamkor (importyor yoki eksportyor) firma uchun to'liq aggregatsiya
+    if(counterpartName){
+      const cpKey = String(counterpartName).toLowerCase() + '|' + String(counterpartCountryCode || '').toLowerCase();
+      let cpFirm = existing.counterpart_firms.find(function(c){ return c.key === cpKey; });
+      if(!cpFirm){
+        cpFirm = {
+          key: cpKey,
+          name: counterpartName,
+          country: counterpartCountry,
+          countryCode: counterpartCountryCode,
+          cityState: String(row && row[counterpartSide + 'CityState'] || '').trim(),
+          email: String(row && row[counterpartSide + 'Email'] || '').trim(),
+          tel: String(row && row[counterpartSide + 'Tel'] || '').trim(),
+          web: String(row && row[counterpartSide + 'Web'] || '').trim(),
+          linkedin: String(row && row[counterpartSide + 'Linkedin'] || '').trim(),
+          totalValue: 0,
+          totalQty: 0,
+          docCount: 0,
+          lastDate: '',
+          _lastOrd: 0
+        };
+        existing.counterpart_firms.push(cpFirm);
+      }
+      cpFirm.totalValue += tradeValue;
+      cpFirm.totalQty += qty;
+      cpFirm.docCount += 1;
+      // Bo'sh maydonlarni to'ldirish
+      if(!cpFirm.cityState){ cpFirm.cityState = String(row && row[counterpartSide + 'CityState'] || '').trim(); }
+      if(!cpFirm.email){ cpFirm.email = String(row && row[counterpartSide + 'Email'] || '').trim(); }
+      if(!cpFirm.tel){ cpFirm.tel = String(row && row[counterpartSide + 'Tel'] || '').trim(); }
+      if(!cpFirm.web){ cpFirm.web = String(row && row[counterpartSide + 'Web'] || '').trim(); }
+      if(!cpFirm.linkedin){ cpFirm.linkedin = String(row && row[counterpartSide + 'Linkedin'] || '').trim(); }
+      if(arrivalOrdinal > 0 && arrivalOrdinal > cpFirm._lastOrd){
+        cpFirm._lastOrd = arrivalOrdinal;
+        cpFirm.lastDate = arrivalDate;
+      }
+    }
 
     // Products
     _taPushUnique(existing.hs_codes, row && row.hsCode);
@@ -467,6 +507,12 @@ function aggregateShipmentsToFirms(rows, mode, sourceCountries){
     delete firm.unit_price_samples;
     delete firm._first_arrival_ordinal;
     delete firm._last_arrival_ordinal;
+    // Counterpart firmlarini totalValue bo'yicha tartiblab, internal kalitlarni olib tashlaymiz
+    if(Array.isArray(firm.counterpart_firms)){
+      firm.counterpart_firms = firm.counterpart_firms
+        .map(function(cp){ delete cp.key; delete cp._lastOrd; return cp; })
+        .sort(function(a, b){ return (b.totalValue || 0) - (a.totalValue || 0); });
+    }
     return firm;
   });
 
