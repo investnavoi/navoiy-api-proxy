@@ -149,6 +149,7 @@ export default async function handler(req, res) {
       max_records: maxRecords
     });
   } catch (e) {
-    res.json({ data: [], error: e.message });
+    const isQuota = e.message && (e.message.includes('403') || e.message.includes('429'));
+    res.json({ data: [], error: e.message, quotaExceeded: isQuota });
   }
 }
