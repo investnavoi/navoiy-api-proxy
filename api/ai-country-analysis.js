@@ -106,8 +106,8 @@ const TARIFF_TARGETS = [
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
 }
 
 function normalizeCountryKey(value) {
@@ -561,12 +561,185 @@ async function handleTariffRequest(req, res) {
   });
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   FREIGHT (mode=freight)  —  real 20ft FCL rates
+   Tier 1: SeaRates REST  (sirius.searates.com/port/api-fcl, apiKey query param)
+   Tier 2: SeaRates GraphQL v2 (rates.searates.com/graphql, Bearer token)
+   Tier 3: Freightos public shippingCalculator (no key)
+   POST /api/ai-country-analysis?mode=freight
+   Body: { routes: [{from_lat, from_lng, to_lat, to_lng}, ...] }  (max 30)
+   ══════════════════════════════════════════════════════════════════ */
+const FR_SEARATES_REST = 'https://sirius.searates.com/port/api-fcl';
+const FR_SEARATES_GQL  = 'https://rates.searates.com/graphql';
+const FR_FREIGHTOS_URL = 'https://ship.freightos.com/api/shippingCalculator';
+const FR_TIMEOUT_MS    = 20000;
+const FR_MAX_PARALLEL  = 5;
+
+function frSleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function frTodayISO() { return new Date().toISOString().split('T')[0]; }
+function frAbortTimer(ms) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  return { signal: ctrl.signal, clear: () => clearTimeout(id) };
+}
+
+async function frFetchSeaRatesREST(fromLat, fromLng, toLat, toLng, apiKey) {
+  if (!apiKey) return null;
+  const params = new URLSearchParams({
+    apiKey: apiKey,
+    lat_from: String(parseFloat(fromLat)), lng_from: String(parseFloat(fromLng)),
+    lat_to: String(parseFloat(toLat)),     lng_to: String(parseFloat(toLng))
+  });
+  const t = frAbortTimer(FR_TIMEOUT_MS);
+  try {
+    const r = await fetch(`${FR_SEARATES_REST}?${params}`, { headers: { Accept: 'application/json' }, signal: t.signal });
+    t.clear();
+    if (!r.ok) { console.warn('[freight] REST HTTP', r.status); return null; }
+    const json = await r.json();
+    let price = null, days = null;
+    if (json && typeof json === 'object') {
+      price = Number(json.price || json.total_price || json.totalPrice || 0);
+      days  = Number(json.duration || json.transit_time || json.transitTime || json.days || 0);
+      if ((!price || price <= 0) && Array.isArray(json.rates) && json.rates.length) {
+        const r20 = json.rates.find((x) => /20/i.test(String(x.type || x.container || ''))) || json.rates[0];
+        if (r20) {
+          price = Number(r20.price || r20.total_price || r20.totalPrice || 0);
+          days  = Number(r20.transit_time || r20.duration || r20.transitTime || 0);
+        }
+      }
+      if ((!price || price <= 0) && json.data && typeof json.data === 'object') {
+        price = Number(json.data.price || json.data.total_price || 0);
+        days  = Number(json.data.duration || json.data.transit_time || 0);
+      }
+    }
+    if (!price || price <= 0) return null;
+    return { rate_usd: Math.round(price), transit_days: Math.max(0, Math.round(days)), mode: 'FCL 20ft (SeaRates REST)', source: 'SeaRates' };
+  } catch (e) {
+    t.clear();
+    if (e.name !== 'AbortError') console.warn('[freight] REST error:', e.message);
+    return null;
+  }
+}
+
+async function frFetchSeaRatesGQL(fromLat, fromLng, toLat, toLng, apiKey) {
+  if (!apiKey) return null;
+  const body = {
+    query: `query GetRates($input: RatesInput) { rates(input: $input) { General { totalPrice totalCurrency totalTransitTime } points { totalPrice totalCurrency transitTime { rate } } } }`,
+    variables: { input: {
+      coordinatesFrom: [parseFloat(fromLat), parseFloat(fromLng)],
+      coordinatesTo:   [parseFloat(toLat),   parseFloat(toLng)],
+      shippingType: 'FCL', container: 'ST20', date: frTodayISO()
+    } }
+  };
+  const t = frAbortTimer(FR_TIMEOUT_MS);
+  try {
+    const r = await fetch(FR_SEARATES_GQL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify(body), signal: t.signal
+    });
+    t.clear();
+    if (!r.ok) { console.warn('[freight] GQL HTTP', r.status); return null; }
+    const json = await r.json();
+    if (json.errors && json.errors.length) { console.warn('[freight] GQL errors:', json.errors[0] && json.errors[0].message); return null; }
+    const rd = json && json.data && json.data.rates;
+    if (!rd) return null;
+    const arr = Array.isArray(rd) ? rd : [rd];
+    let price = null, days = null;
+    for (const entry of arr) {
+      const g = entry && entry.General;
+      if (g && Number(g.totalPrice) > 0) { price = Number(g.totalPrice); days = Number(g.totalTransitTime || 0); break; }
+    }
+    if (!price || price <= 0) {
+      for (const entry of arr) {
+        const pts = (entry && Array.isArray(entry.points)) ? entry.points : [];
+        for (const pt of pts) {
+          const p = Number(pt.totalPrice || 0);
+          if (p > 0 && (!price || p < price)) { price = p; days = Number((pt.transitTime && pt.transitTime.rate) || pt.transitTime || 0); }
+        }
+      }
+    }
+    if (!price || price <= 0) return null;
+    return { rate_usd: Math.round(price), transit_days: Math.max(0, Math.round(days)), mode: 'FCL 20ft (SeaRates GQL v2)', source: 'SeaRates' };
+  } catch (e) {
+    t.clear();
+    if (e.name !== 'AbortError') console.warn('[freight] GQL error:', e.message);
+    return null;
+  }
+}
+
+async function frFetchFreightos(fromLat, fromLng, toLat, toLng) {
+  const params = new URLSearchParams({
+    origin: `${fromLat},${fromLng}`, destination: `${toLat},${toLng}`,
+    mode: 'FCL', loadtype: '20DC', estimate: 'true', format: 'json'
+  });
+  const t = frAbortTimer(FR_TIMEOUT_MS);
+  try {
+    const r = await fetch(`${FR_FREIGHTOS_URL}?${params}`, { headers: { Accept: 'application/json' }, signal: t.signal });
+    t.clear();
+    if (!r.ok) return null;
+    const json = await r.json();
+    let price = null, days = null;
+    if (json && json.result && json.result.price && json.result.price.min) {
+      price = Number(json.result.price.min);
+      days  = Number((json.result.transit_time && json.result.transit_time.min) || 0);
+    } else if (json && Array.isArray(json.quotes) && json.quotes.length) {
+      const q = json.quotes[0];
+      price = Number(q.totalPrice || (q.price && q.price.min) || 0);
+      days  = Number(q.transitDays || (q.transit_time && q.transit_time.min) || 0);
+    }
+    if (!price || price <= 0) return null;
+    return { rate_usd: Math.round(price), transit_days: Math.max(0, Math.round(days)), mode: 'FCL 20ft (Freightos estimate)', source: 'Freightos' };
+  } catch (e) {
+    t.clear();
+    return null;
+  }
+}
+
+async function frProcessRoute(route, apiKey) {
+  const { from_lat, from_lng, to_lat, to_lng } = route || {};
+  let result = await frFetchSeaRatesREST(from_lat, from_lng, to_lat, to_lng, apiKey);
+  if (!result) result = await frFetchSeaRatesGQL(from_lat, from_lng, to_lat, to_lng, apiKey);
+  if (!result) result = await frFetchFreightos(from_lat, from_lng, to_lat, to_lng);
+  return result || { error: 'No rate available from SeaRates or Freightos' };
+}
+
+async function handleFreightRequest(req, res) {
+  let routes = [];
+  if (req.method === 'GET') {
+    const { from_lat, from_lng, to_lat, to_lng } = req.query;
+    if (!from_lat || !from_lng || !to_lat || !to_lng) return res.status(400).json({ error: 'from_lat, from_lng, to_lat, to_lng required' });
+    routes = [{ from_lat, from_lng, to_lat, to_lng }];
+  } else {
+    const body = typeof req.body === 'string' ? (() => { try { return JSON.parse(req.body); } catch (_e) { return {}; } })() : (req.body || {});
+    routes = Array.isArray(body.routes) ? body.routes : [];
+    if (!routes.length) return res.status(400).json({ error: 'routes array required in POST body' });
+    if (routes.length > 30) return res.status(400).json({ error: 'max 30 routes per request' });
+  }
+  const apiKey = String(process.env.SEARATES_API_KEY || process.env.SEARATES_KEY || '').trim();
+  if (!apiKey) console.warn('[freight] SEARATES_API_KEY not set — Freightos fallback only');
+
+  const results = [];
+  for (let i = 0; i < routes.length; i += FR_MAX_PARALLEL) {
+    const chunk = routes.slice(i, i + FR_MAX_PARALLEL);
+    const chunkResults = await Promise.all(chunk.map((route) => frProcessRoute(route, apiKey)));
+    results.push(...chunkResults);
+    if (i + FR_MAX_PARALLEL < routes.length) await frSleep(400);
+  }
+  if (req.method === 'GET') return res.json(results[0]);
+  return res.json({ results, count: results.length });
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    if (String(req.query.mode || '').trim().toLowerCase() === 'tariff') {
+    const reqMode = String(req.query.mode || '').trim().toLowerCase();
+    if (reqMode === 'freight') {
+      return await handleFreightRequest(req, res);
+    }
+    if (reqMode === 'tariff') {
       return await handleTariffRequest(req, res);
     }
     const input = String(req.query.country || '').trim();
