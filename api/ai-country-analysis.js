@@ -659,13 +659,17 @@ async function frFetchSeaRatesREST(fromLat, fromLng, toLat, toLng, apiKey) {
 
 async function frFetchSeaRatesGQL(fromLat, fromLng, toLat, toLng, bearerToken) {
   if (!bearerToken) return null;
+  // Logistics Explorer v3 schema — verified live:
+  //   rates(coordinatesFrom:[lat,lng], coordinatesTo:[lat,lng], shippingType: FCL,
+  //         container: ST20, date:"YYYY-MM-DD") -> [ { general { totalPrice totalCurrency totalTransitTime } } ]
+  // (args are DIRECT, not wrapped in "input"; response field is "general", lowercase.)
   const body = {
-    query: `query GetRates($input: RatesInput) { rates(input: $input) { General { totalPrice totalCurrency totalTransitTime } points { totalPrice totalCurrency transitTime { rate } } } }`,
-    variables: { input: {
-      coordinatesFrom: [parseFloat(fromLat), parseFloat(fromLng)],
-      coordinatesTo:   [parseFloat(toLat),   parseFloat(toLng)],
-      shippingType: 'FCL', container: 'ST20', date: frTodayISO()
-    } }
+    query: `query GetRates($cf:[Float!],$ct:[Float!],$d:String){ rates(coordinatesFrom:$cf, coordinatesTo:$ct, shippingType: FCL, container: ST20, date:$d){ general { totalPrice totalCurrency totalTransitTime } } }`,
+    variables: {
+      cf: [parseFloat(fromLat), parseFloat(fromLng)],
+      ct: [parseFloat(toLat),   parseFloat(toLng)],
+      d: frTodayISO()
+    }
   };
   const t = frAbortTimer(FR_TIMEOUT_MS);
   try {
@@ -681,22 +685,15 @@ async function frFetchSeaRatesGQL(fromLat, fromLng, toLat, toLng, bearerToken) {
     const rd = json && json.data && json.data.rates;
     if (!rd) return null;
     const arr = Array.isArray(rd) ? rd : [rd];
+    // Pick the cheapest valid quote among the returned options
     let price = null, days = null;
     for (const entry of arr) {
-      const g = entry && entry.General;
-      if (g && Number(g.totalPrice) > 0) { price = Number(g.totalPrice); days = Number(g.totalTransitTime || 0); break; }
-    }
-    if (!price || price <= 0) {
-      for (const entry of arr) {
-        const pts = (entry && Array.isArray(entry.points)) ? entry.points : [];
-        for (const pt of pts) {
-          const p = Number(pt.totalPrice || 0);
-          if (p > 0 && (!price || p < price)) { price = p; days = Number((pt.transitTime && pt.transitTime.rate) || pt.transitTime || 0); }
-        }
-      }
+      const g = entry && entry.general;
+      const p = g && Number(g.totalPrice);
+      if (p > 0 && (price === null || p < price)) { price = p; days = Number(g.totalTransitTime || 0); }
     }
     if (!price || price <= 0) return null;
-    return { rate_usd: Math.round(price), transit_days: Math.max(0, Math.round(days)), mode: 'FCL 20ft (SeaRates GQL v2)', source: 'SeaRates' };
+    return { rate_usd: Math.round(price), transit_days: Math.max(0, Math.round(days)), mode: 'FCL 20ft (SeaRates)', source: 'SeaRates' };
   } catch (e) {
     t.clear();
     if (e.name !== 'AbortError') console.warn('[freight] GQL error:', e.message);
@@ -734,11 +731,12 @@ async function frFetchFreightos(fromLat, fromLng, toLat, toLng) {
 
 async function frProcessRoute(route, apiKey, bearerToken) {
   const { from_lat, from_lng, to_lat, to_lng } = route || {};
-  // Tier 1: legacy REST (apiKey query param) — if a sirius.searates key is set
-  let result = await frFetchSeaRatesREST(from_lat, from_lng, to_lat, to_lng, apiKey);
-  // Tier 2: Logistics Explorer GraphQL (Bearer platform-token)
-  if (!result) result = await frFetchSeaRatesGQL(from_lat, from_lng, to_lat, to_lng, bearerToken);
-  // Tier 3: Freightos estimate (no key)
+  let result = null;
+  // Primary: Logistics Explorer GraphQL (Bearer platform-token) — the active product.
+  if (bearerToken) result = await frFetchSeaRatesGQL(from_lat, from_lng, to_lat, to_lng, bearerToken);
+  // Fallback A: legacy sirius REST (only if a separate REST key is configured and GQL failed).
+  if (!result) result = await frFetchSeaRatesREST(from_lat, from_lng, to_lat, to_lng, apiKey);
+  // Fallback B: Freightos estimate (no key).
   if (!result) result = await frFetchFreightos(from_lat, from_lng, to_lat, to_lng);
   return result || { error: 'No rate available from SeaRates or Freightos' };
 }
