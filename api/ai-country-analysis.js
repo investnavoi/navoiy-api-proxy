@@ -757,6 +757,23 @@ async function handleFreightRequest(req, res) {
   const platformId = String(process.env.SEARATES_PLATFORM_ID || process.env.SEARATES_ID || '').trim();
   if (!apiKey) console.warn('[freight] SEARATES_API_KEY not set — Freightos fallback only');
 
+  // ── Diagnostic: ?debug=1 reports env/token state WITHOUT consuming a search ──
+  if (String(req.query.debug || '') === '1') {
+    let tokenStatus = 'not_attempted';
+    if (apiKey && platformId) {
+      const tok = await frGetPlatformToken(platformId, apiKey);
+      tokenStatus = tok ? ('ok (' + tok.slice(0, 16) + '...)') : 'FAILED';
+    }
+    return res.json({
+      debug: true,
+      hasApiKey: !!apiKey,
+      apiKeyPreview: apiKey ? (apiKey.slice(0, 6) + '...' + apiKey.slice(-4)) : '',
+      hasPlatformId: !!platformId,
+      platformId: platformId || '',
+      tokenExchange: tokenStatus
+    });
+  }
+
   // Logistics Explorer (v3) Bearer token — exchanged once, cached in-memory.
   let bearerToken = '';
   if (apiKey && platformId) {
