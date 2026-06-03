@@ -571,8 +571,44 @@ async function handleTariffRequest(req, res) {
    ══════════════════════════════════════════════════════════════════ */
 const FR_SEARATES_REST = 'https://sirius.searates.com/port/api-fcl';
 const FR_SEARATES_GQL  = 'https://rates.searates.com/graphql';
+const FR_SEARATES_TOKEN_URL = 'https://www.searates.com/auth/platform-token';
 const FR_FREIGHTOS_URL = 'https://ship.freightos.com/api/shippingCalculator';
 const FR_TIMEOUT_MS    = 20000;
+
+/* ── SeaRates Logistics Explorer (v3.0) — platform-token exchange ──
+   The new Logistics Explorer API needs a Bearer token obtained from
+   /auth/platform-token?id={PLATFORM_ID}&api_key={API_KEY}. The token is cached
+   in-memory for the lifetime of the warm serverless instance (tokens are valid
+   for hours), so we don't burn the trial search quota on token requests. */
+let _frTokenCache = { token: '', exp: 0 };
+async function frGetPlatformToken(platformId, apiKey) {
+  if (!platformId || !apiKey) return '';
+  const now = Date.now();
+  if (_frTokenCache.token && _frTokenCache.exp > now + 60000) return _frTokenCache.token;
+  const t = frAbortTimer(FR_TIMEOUT_MS);
+  try {
+    const url = `${FR_SEARATES_TOKEN_URL}?id=${encodeURIComponent(platformId)}&api_key=${encodeURIComponent(apiKey)}`;
+    const r = await fetch(url, { headers: { Accept: 'application/json' }, signal: t.signal });
+    t.clear();
+    if (!r.ok) { console.warn('[freight] token HTTP', r.status); return ''; }
+    const text = await r.text();
+    let token = '';
+    try {
+      const j = JSON.parse(text);
+      token = String(j['s-token'] || j.token || j.access_token || j.platform_token || (j.data && (j.data.token || j.data['s-token'])) || '').trim();
+    } catch (_e) {
+      token = String(text || '').trim().replace(/^"+|"+$/g, ''); // plain-text token
+    }
+    if (!token) { console.warn('[freight] token empty, body:', text.slice(0, 120)); return ''; }
+    // JWTs are typically valid ~1h+; cache for 50 min to be safe
+    _frTokenCache = { token, exp: now + 50 * 60 * 1000 };
+    return token;
+  } catch (e) {
+    t.clear();
+    if (e.name !== 'AbortError') console.warn('[freight] token error:', e.message);
+    return '';
+  }
+}
 const FR_MAX_PARALLEL  = 5;
 
 function frSleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -621,8 +657,8 @@ async function frFetchSeaRatesREST(fromLat, fromLng, toLat, toLng, apiKey) {
   }
 }
 
-async function frFetchSeaRatesGQL(fromLat, fromLng, toLat, toLng, apiKey) {
-  if (!apiKey) return null;
+async function frFetchSeaRatesGQL(fromLat, fromLng, toLat, toLng, bearerToken) {
+  if (!bearerToken) return null;
   const body = {
     query: `query GetRates($input: RatesInput) { rates(input: $input) { General { totalPrice totalCurrency totalTransitTime } points { totalPrice totalCurrency transitTime { rate } } } }`,
     variables: { input: {
@@ -635,7 +671,7 @@ async function frFetchSeaRatesGQL(fromLat, fromLng, toLat, toLng, apiKey) {
   try {
     const r = await fetch(FR_SEARATES_GQL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${bearerToken}` },
       body: JSON.stringify(body), signal: t.signal
     });
     t.clear();
@@ -696,10 +732,13 @@ async function frFetchFreightos(fromLat, fromLng, toLat, toLng) {
   }
 }
 
-async function frProcessRoute(route, apiKey) {
+async function frProcessRoute(route, apiKey, bearerToken) {
   const { from_lat, from_lng, to_lat, to_lng } = route || {};
+  // Tier 1: legacy REST (apiKey query param) — if a sirius.searates key is set
   let result = await frFetchSeaRatesREST(from_lat, from_lng, to_lat, to_lng, apiKey);
-  if (!result) result = await frFetchSeaRatesGQL(from_lat, from_lng, to_lat, to_lng, apiKey);
+  // Tier 2: Logistics Explorer GraphQL (Bearer platform-token)
+  if (!result) result = await frFetchSeaRatesGQL(from_lat, from_lng, to_lat, to_lng, bearerToken);
+  // Tier 3: Freightos estimate (no key)
   if (!result) result = await frFetchFreightos(from_lat, from_lng, to_lat, to_lng);
   return result || { error: 'No rate available from SeaRates or Freightos' };
 }
@@ -717,12 +756,20 @@ async function handleFreightRequest(req, res) {
     if (routes.length > 30) return res.status(400).json({ error: 'max 30 routes per request' });
   }
   const apiKey = String(process.env.SEARATES_API_KEY || process.env.SEARATES_KEY || '').trim();
+  const platformId = String(process.env.SEARATES_PLATFORM_ID || process.env.SEARATES_ID || '').trim();
   if (!apiKey) console.warn('[freight] SEARATES_API_KEY not set — Freightos fallback only');
+
+  // Logistics Explorer (v3) Bearer token — exchanged once, cached in-memory.
+  let bearerToken = '';
+  if (apiKey && platformId) {
+    bearerToken = await frGetPlatformToken(platformId, apiKey);
+    if (!bearerToken) console.warn('[freight] platform-token exchange failed — REST/Freightos only');
+  }
 
   const results = [];
   for (let i = 0; i < routes.length; i += FR_MAX_PARALLEL) {
     const chunk = routes.slice(i, i + FR_MAX_PARALLEL);
-    const chunkResults = await Promise.all(chunk.map((route) => frProcessRoute(route, apiKey)));
+    const chunkResults = await Promise.all(chunk.map((route) => frProcessRoute(route, apiKey, bearerToken)));
     results.push(...chunkResults);
     if (i + FR_MAX_PARALLEL < routes.length) await frSleep(400);
   }
